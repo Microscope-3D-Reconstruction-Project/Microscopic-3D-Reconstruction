@@ -67,7 +67,7 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
         parent: world
         child: sphere_obstacle::sphere_body
         X_PC:
-            translation: [0.5, 0.0, 0.7]
+            translation: [0.5, 0.0, 0.6]
     plant_config:
         # For some reason, this requires a small timestep
         time_step: 0.005
@@ -83,8 +83,12 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
     """
     )
     
+    # ===================================================================
+    # Diagram Setup
+    # ===================================================================
     builder = DiagramBuilder()
 
+    # Load scenario
     scenario = LoadScenario(data=scenario_data)
     station: IiwaHardwareStationDiagram = builder.AddNamedSystem(
         "station",
@@ -93,7 +97,7 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
         ),
     )
 
-    # Set up teleop widgets
+    # Load teleop sliders
     controller_plant = station.get_iiwa_controller_plant()
     teleop = builder.AddSystem(
         JointSliders(
@@ -102,30 +106,29 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
         )
     )
 
+    # Add connections
     builder.Connect(
         teleop.get_output_port(), station.GetInputPort("iiwa.position"),
     )
 
-    if has_wsg:
-        wsg_teleop = builder.AddSystem(WsgButton(station.internal_meshcat))
-        builder.Connect(
-            wsg_teleop.get_output_port(0), station.GetInputPort("wsg.position")
-        )
-
-    # Required for visualizing the internal station
+    # Visualize internal station with Meshcat
     _ = MeshcatVisualizer.AddToBuilder(
         builder, station.GetOutputPort("query_object"), station.internal_meshcat
     )
 
+    # Build diagram
     diagram = builder.Build()
 
+    # ====================================================================
+    # Simulator Setup
+    # ====================================================================
     simulator = Simulator(diagram)
     ApplySimulatorConfig(scenario.simulator_config, simulator)
     simulator.set_target_realtime_rate(1.0)
 
     station.internal_meshcat.AddButton("Stop Simulation")
+    station.internal_meshcat.AddButton("Plan Trajectory")
     station.internal_meshcat.AddButton("Move to Goal")
-
 
     # ====================================================================
     # Trajectory Optimization + TOPPRA Loop
@@ -133,43 +136,47 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
 
     # Define goal position and limits
     q_goal = np.array([0, np.pi/2, 0.0, 0.0, 0.0, 0.0, 0.0])
-    vel_limits = np.full(7, 0.5)  # rad/s
-    acc_limits = np.full(7, 0.5)  # rad/s^2
+    vel_limits = np.full(7, 0.2)  # rad/s
+    acc_limits = np.full(7, 0.2)  # rad/s^2
     
-    # Get optimization plant and context
-    optimization_plant = station.internal_station._optimization_plant
-    optimization_plant_context = station.internal_station._optimization_plant_context
+    # Get plants
+    optimization_plant = station.internal_station.get_optimization_plant()
     internal_plant = station.get_internal_plant()
-    internal_context = station.get_internal_plant_context()
 
+    # Optimization params
     num_q = optimization_plant.num_positions()
     num_control_points = 10
-
-    station_context = station.GetMyContextFromRoot(simulator.get_context())
-    q_current = station.GetOutputPort("iiwa.position_measured").Eval(station_context)
 
     # ====================================================================
     # Main Simulation Loop
     # ====================================================================
     move_clicks = 0
+    plan_clicks = 0
     path_counter = 0
     trajectory = None
     trajectory_start_time = 0.0
+    execute_trajectory = False
     while station.internal_meshcat.GetButtonClicks("Stop Simulation") < 1:
-        # Check if "Move to Goal" button was clicked
         new_move_clicks = station.internal_meshcat.GetButtonClicks("Move to Goal")
-        if new_move_clicks > move_clicks:
-            move_clicks = new_move_clicks
+        new_plan_clicks = station.internal_meshcat.GetButtonClicks("Plan Trajectory")
+        if new_plan_clicks > plan_clicks: # Triggered when Plan Trajectory is pressed
+            plan_clicks = new_plan_clicks
             print("Planning trajectory to goal...")
 
+            # Get contexts (NOTE: Must do here to have up-to-date values)
+            internal_context = station.get_internal_plant_context()
+            station_context = station.GetMyContextFromRoot(simulator.get_context())
+            optimization_plant_context = station.internal_station.get_optimization_plant_context()
+            q_current = station.GetOutputPort("iiwa.position_measured").Eval(station_context)
+            
             trajopt = KinematicTrajectoryOptimization(num_q, num_control_points, spline_order=4)
             prog = trajopt.get_mutable_prog()
 
-            # Costs
+            # ============= Costs =============
             trajopt.AddDurationCost(1.0)
             trajopt.AddPathLengthCost(1.0)
 
-            # Bounds
+            # ============= Bounds =============
             trajopt.AddPositionBounds(
                 optimization_plant.GetPositionLowerLimits(), optimization_plant.GetPositionUpperLimits()
             )
@@ -177,6 +184,7 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
                 optimization_plant.GetVelocityLowerLimits(), optimization_plant.GetVelocityUpperLimits()
             )
 
+            # ============= Constraints =============
             trajopt.AddDurationConstraint(0.5, 5) # TODO: May need to adjust later
 
             # Position
@@ -191,6 +199,9 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
             trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 1)
 
             def PlotPath(control_points):
+                '''
+                Visualize the end-effector path in Meshcat
+                '''
                 rgba = Rgba(0, 1, 0, 1)
                 cps = control_points.reshape((num_q, num_control_points))
                 # Reconstruct the spline trajectory
@@ -212,7 +223,6 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
                     line_width=0.05,
                     rgba=rgba,
                 )
-
             prog.AddVisualizationCallback(PlotPath, trajopt.control_points().reshape((-1,)))
 
             # Solve for initial guess
@@ -222,6 +232,7 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
                 print(result.get_solver_id().name())
             trajopt.SetInitialGuess(trajopt.ReconstructTrajectory(result))
             
+            # Add collision constraints for next solve
             collision_constraint = MinimumDistanceLowerBoundConstraint(
                 optimization_plant,
                 0.001,
@@ -232,17 +243,33 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
             for s in evaluate_at_s:
                 trajopt.AddPathPositionConstraint(collision_constraint, s)
 
-
+            # Solve for trajectory with collision avoidance
             result = Solve(prog)
             if not result.is_success():
                 print("Trajectory optimization failed")
                 print(result.get_solver_id().name())
                 continue
 
+            
+
             print("Trajectory optimization succeeded!")
 
-
+            # Reparameterize with TOPPRA
             geometric_path = trajopt.ReconstructTrajectory(result)
+
+            # Plot joint trajectories
+            ts = np.linspace(geometric_path.start_time(), geometric_path.end_time(), 100)
+            qs = np.array([geometric_path.value(t) for t in ts])
+            plt.figure()
+            for i in range(qs.shape[1]):
+                plt.plot(ts, qs[:, i], label=f"Joint {i+1}")
+            plt.xlabel("Time [s]")
+            plt.ylabel("Joint Position [rad]")
+            plt.title("Geometric Path Joint Positions")
+            plt.legend()
+            plt.savefig("output/geometric_path.png")
+            plt.close()
+
             trajectory = reparameterize_with_toppra(
                 geometric_path,
                 controller_plant,
@@ -251,10 +278,18 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
             )
 
             print(f"✓ TOPPRA succeeded! Trajectory duration: {trajectory.end_time():.2f}s")
-            trajectory_start_time = simulator.get_context().get_time()
 
         # If we have a trajectory, execute it
-        if trajectory is not None:
+        if new_move_clicks > move_clicks: # Triggered when Move to Goal is pressed
+            move_clicks = new_move_clicks
+            if trajectory is None:
+                print("No trajectory planned yet!")
+            else:
+                print("Executing trajectory...")
+                execute_trajectory = True
+                trajectory_start_time = simulator.get_context().get_time()
+
+        if execute_trajectory:
             current_time = simulator.get_context().get_time()
             traj_time = current_time - trajectory_start_time
             
@@ -267,11 +302,12 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
             else:
                 print("✓ Trajectory execution complete!")
                 trajectory = None
-
-
+                execute_trajectory = False
+        
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.1)
 
     station.internal_meshcat.DeleteButton("Stop Simulation")
+    station.internal_meshcat.DeleteButton("Plan Trajectory")
     station.internal_meshcat.DeleteButton("Move to Goal")
 
 

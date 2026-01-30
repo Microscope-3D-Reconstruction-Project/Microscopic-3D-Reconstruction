@@ -241,40 +241,6 @@ class InternalStationDiagram(Diagram):
         
         self._iiwa_controller_plant.Finalize()
 
-        # =====================================================
-        # Setup optimization plant (to not connect to diagram)
-        # self._optimization_plant = MultibodyPlant(time_step=self._plant.time_step())
-        # self._optimization_scene_graph = SceneGraph()
-        # self._optimization_plant.RegisterAsSourceForSceneGraph(self._optimization_scene_graph)
-        
-        # opt_parser = Parser(self._optimization_plant)
-        # for p in package_xmls:
-        #     opt_parser.package_map().AddPackageXml(p)
-        # ConfigureParser(opt_parser)
-
-        # # Load the same models as the internal plant
-        # ProcessModelDirectives(
-        #     directives=ModelDirectives(directives=scenario.directives),
-        #     parser=opt_parser,
-        # )
-        
-        # self._optimization_plant.Finalize()
-
-        # Connect the optimization plant to its scene graph
-        # temp_builder = DiagramBuilder()
-        # temp_plant_sys = temp_builder.AddSystem(self._optimization_plant)
-        # temp_sg_sys = temp_builder.AddSystem(self._optimization_scene_graph)
-        # temp_builder.Connect(
-        #     temp_sg_sys.get_query_output_port(),
-        #     temp_plant_sys.get_geometry_query_input_port()
-        # )
-
-        # self._optimization_diagram = temp_builder.Build()
-        # self._optimization_diagram_context = self._optimization_diagram.CreateDefaultContext()
-        # self._optimization_plant_context = self._optimization_diagram.GetSubsystemContext(
-        #     self._optimization_plant, self._optimization_diagram_context
-        # )
-
         temp_builder = DiagramBuilder()
         self._optimization_plant, self._optimization_scene_graph = AddMultibodyPlantSceneGraph(
             temp_builder,
@@ -340,6 +306,12 @@ class InternalStationDiagram(Diagram):
 
     def get_plant_context(self) -> Context:
         return self._plant_updater.get_plant_context()
+
+    def get_optimization_plant(self) -> MultibodyPlant:
+        return self._optimization_plant
+
+    def get_optimization_plant_context(self) -> Context:
+        return self._optimization_plant_context
 
     def get_iiwa_controller_plant(self) -> MultibodyPlant:
         return self._iiwa_controller_plant
