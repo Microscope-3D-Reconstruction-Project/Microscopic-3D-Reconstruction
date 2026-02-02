@@ -11,16 +11,85 @@ Taken from https://github.com/kczttm/SEW-Geometric-Teleop
 Author: Roman Mineyev
 """
 
+"""
+Naming conventions:
+- Frames:
+    - 0: Base frame (in our case the world frame)
+    - 7: End-effector frame (link 7)
+    - M: Microscope mount frame (attached to end-effector)
+    - S: Shoulder (joint 1 position)
+    - E: Elbow (joint 4 position)
+    - W: Wrist (joint 7 position)
+- Variables:
+    - R_AB: Rotation matrix from frame b to frame a
+    - p_AB_C: Position vector from point A to point B expressed in frame C
+    - q_i: Joint angle for joint i
+
+vector from a to b expressed in frame c:
+
+
+"""
+
 
 class KinematicsSolver:
     """
     Kinematics solver for KUKA LBR iiwa 14 R820 robot.
     """
 
-    def __init__(self):
+    def __init__(self, station):
         self.kin = self.get_kin()  # Get kinematic parameters of KUKA iiwa 14 R820 robot
+        self.R_7M, self.p_7M_in_7 = self.get_microscope_offsets(
+            station
+        )  # Get the microscope mount offsets
 
-        # Microscope offsets
+    def get_microscope_offsets(self, station):
+        """
+        Calculate the microscope mount offsets based on the station's plant.
+
+        NOTE: We use joint 6 position in SDF = joint 7 position in URF convention.
+        This is just how the IK is set up.
+        """
+
+        # Get plant and context
+        plant = station.get_internal_plant()
+        context = station.get_internal_plant_context()
+        joint6_frame = plant.GetFrameByName("iiwa_link_6")
+        tip_frame = plant.GetFrameByName("microscope_tip_link")
+        link7_frame = plant.GetFrameByName("iiwa_link_7")
+
+        # Get relevant transforms
+        p_07 = plant.CalcRelativeTransform(
+            context, plant.world_frame(), joint6_frame
+        ).translation()  # joint 7 pos in URDF/get_kin() = joint 6 pos in SDF
+        p_0M = plant.CalcRelativeTransform(
+            context, plant.world_frame(), tip_frame
+        ).translation()
+        R_70 = (
+            plant.CalcRelativeTransform(context, plant.world_frame(), link7_frame)
+            .inverse()
+            .rotation()
+        )  # joint 7 rot in URF/get_kin() = joint 7 rot in SDF
+
+        p_7M = p_0M - p_07
+        p_7M_in_7 = R_70.multiply(
+            p_7M
+        )  # Vector from joint 6 to microscope tip in joint 7 frame. Called p_M7 because joint 6 is link 7 in get_kin()
+
+        # Debugging prints
+        # print("Microscope tip position in world:", p_0M)
+        # print("Joint 7 position in world:", p_07)
+        # print("Microscope mount offset p_7M:", p_7M)
+        # print("Microscope mount offset p_7M_in_7:", p_7M_in_7)
+        # Microscope offsets (NOTE: I just know these so I didn't bother calculating. Assuming that it won't change)
+        R_7M = np.array(
+            [
+                [-1, 0, 0],
+                [0, 1, 0],
+                [0, 0, -1],
+            ]
+        )
+
+        return R_7M, p_7M_in_7
 
     def get_kin(self):
         """
@@ -67,32 +136,41 @@ class KinematicsSolver:
             psi = 0  # Default psi angle if not provided
 
         # Adjust end-effector position to account for microscope mount offset
-        kin = self.kin
+        R_07 = R_0M @ self.R_7M.T  # Rot from 7 to M to 0 => Rot from 0 to 7
+        p_7M = R_07 @ self.p_7M_in_7
+        p_07 = p_0M - p_7M
 
         # Solve IK using standard kuka_IK method
         r, v = np.array([1, 0, 0]), np.array([0, 1, 0])
         sew_stereo = SEWStereo(r, v)
 
-        return self.kuka_IK(R_0M, p_0T, sew_stereo, psi)
+        # # Print what values we are solving for:
+        # print("Solving IK for R_0M:\n", R_0M)
+        # print("Solving IK for p_0M:", p_0M)
+        # print("Adjusted R_07 for IK:\n", R_07)
+        # print("Adjusted p_07 for IK:", p_07)
+        # print("Using psi angle:", psi)
 
-    def kuka_IK(self, R_07, p_0T, sew_class, psi):
+        return self.kuka_IK(R_07, p_07, sew_stereo, psi)
+
+    def kuka_IK(self, R_07, p_07, sew_class, psi):
         """
         Solve the inverse kinematics for the KUKA LBR iiwa 14 R820 robot using geometric methods.
 
         Args:
             R_07 (np.ndarray): 3x3 rotation matrix from base to link 7.
-            p_0T (np.ndarray): 3-element position vector of the end-effector in the base frame.
+            p_07 (np.ndarray): 3-element position vector of link 7 in the base frame.
             sew_class: An instance of the SEW class for solving the shoulder-elbow-wrist configuration.
             psi (float): The SEW angle.
         """
 
-        print("testing kuka_IK")
         kin = self.kin
         Q = []
         # is_LS_vec = []
 
         # Find wrist position
-        W = p_0T - R_07 @ kin["P"][:, 7]
+        # W = p_0T - R_07 @ kin["P"][:, 7]
+        W = p_07
 
         # Find shoulder position
         S = kin["P"][:, 0]
@@ -154,13 +232,13 @@ class KinematicsSolver:
 
                     q_i = np.array([q1, q2, q3, q4, q5, q6, q7])
                     Q.append(q_i)
-                    overall_is_ls = (
-                        theta_SEW_is_LS
-                        or t12_is_ls
-                        or t34_is_ls
-                        or t56_is_ls
-                        or q7_is_ls
-                    )
+                    # overall_is_ls = (
+                    #     theta_SEW_is_LS
+                    #     or t12_is_ls
+                    #     or t34_is_ls
+                    #     or t56_is_ls
+                    #     or q7_is_ls
+                    # )
                     # is_LS_vec.append(overall_is_ls)
 
         # Q = np.column_stack(Q) if Q else np.array([]).reshape(7, 0)

@@ -94,6 +94,7 @@ def main(use_hardware: bool) -> None:
     link7_frame = internal_plant.GetFrameByName("iiwa_link_7")
 
     # Load teleop sliders
+    controller_plant = station.get_iiwa_controller_plant()
     teleop = builder.AddSystem(
         JointSliders(
             station.internal_meshcat,
@@ -148,33 +149,88 @@ def main(use_hardware: bool) -> None:
     # ====================================================================
     # Compute all joint poses for sphere scanning
     # ====================================================================
+    kinematics_solver = KinematicsSolver(station)
+
     # Solve example IK
-    hemisphere_pos = np.array([0.6, 0.0, 0.3])
+    target_rot = np.eye(3)
+    target_pos = np.array([0.7, 0.0, 0.6])
+    vel_limits = np.full(7, 1.5)  # rad/s
+    acc_limits = np.full(7, 1.5)  # rad/s²
+
     draw_sphere(
         station.internal_meshcat,
         "target_sphere",
-        position=hemisphere_pos,
+        position=target_pos,
         radius=0.02,
     )
 
-    kinematics_solver = KinematicsSolver(station)
-    test = generate_hemisphere_joint_poses(
-        station=station,
-        center=hemisphere_pos,
-        radius=0.15,
-        num_poses=30,
-        num_rotations_per_pose=7,
-        num_elbow_positions=10,
-        kinematics_solver=kinematics_solver,
+    q_sols = kinematics_solver.IK_for_microscope(
+        target_rot,
+        target_pos,
+        psi=0,
     )
+
+    print("IK solutions for test pose:")
+    for idx, q_sol in enumerate(q_sols):
+        print(f"Solution {idx + 1}: {q_sol}")
+
+    controller_plant = station.get_iiwa_controller_plant()
 
     # ====================================================================
     # Main Simulation Loop
     # ====================================================================
     move_clicks = 0
+    ik_idx = 0
     while station.internal_meshcat.GetButtonClicks("Stop Simulation") < 1:
         if station.internal_meshcat.GetButtonClicks("Move to Goal") > move_clicks:
             move_clicks = station.internal_meshcat.GetButtonClicks("Move to Goal")
+
+            if ik_idx >= len(q_sols):
+                print("All IK solutions have been executed.")
+                continue
+
+            q_goal = q_sols[ik_idx]
+            print(f"Moving to goal: {q_goal}")
+
+            station_context = station.GetMyContextFromRoot(simulator.get_context())
+            # Read the measured position from the station (works for both Sim and Hardware)
+            q_current = station.GetOutputPort("iiwa.position_measured").Eval(
+                station_context
+            )
+
+            traj = compute_simple_traj_from_q1_to_q2(
+                controller_plant,
+                q_current,
+                q_goal,
+                vel_limits=vel_limits,
+                acc_limits=acc_limits,
+            )
+
+            t_traj = 0.0
+            dt = 0.01
+            t_start = simulator.get_context().get_time()
+
+            while t_traj < traj.end_time():
+                q_d = traj.value(t_traj).flatten()
+                teleop.SetPositions(q_d)
+
+                step = min(dt, traj.end_time() - t_traj)
+                simulator.AdvanceTo(t_start + t_traj + step)
+                t_traj += step
+
+            # Print microscope tip position after reaching goal
+            station_context = station.get_internal_plant_context()
+            X_W_TIP = station.get_internal_plant().CalcRelativeTransform(
+                station_context,
+                station.get_internal_plant().world_frame(),
+                station.get_internal_plant().GetFrameByName("microscope_tip_link"),
+            )
+            tip_pos = X_W_TIP.translation()
+            print(
+                f"Reached IK solution {ik_idx + 1}. Microscope tip position: {tip_pos}"
+            )
+
+            ik_idx += 1
 
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.1)
 

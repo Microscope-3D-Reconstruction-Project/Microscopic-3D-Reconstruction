@@ -58,16 +58,23 @@ class Node:
         # flags for debugging
         self.is_in_self_collision = False
         self.is_within_joint_limits = False
-        self.is_analytical_solution = False
+        # self.is_analytical_solution = False
 
 
 class SphereScorer:
-    def __init__(self):
+    def __init__(self, station, kinematics_solver):
         # Weights for cost function
         self.w_joint_dist = 1.0
         self.w_eef_pos_dist = 1.0  # avg. pos dist. is roughly 0.051086 m
         self.w_eef_rot_dist = 1.0  # avg. rot dist. is roughly 0.000139 rad
         self.w_manipulability = -0.05  # manipulability score ranges from 0 to 1
+
+        self.kinematics_solver = kinematics_solver
+
+        self.station = station
+        self.internal_plant = station.get_internal_plant()
+        self.plant_context = station.get_internal_plant_context()
+        self.tip_frame = self.internal_plant.GetFrameByName("microscope_tip_link")
 
     # ===================================================================
     # Cost function components
@@ -132,11 +139,10 @@ class SphereScorer:
     def joint_distance(self, node1, node2):
         return np.linalg.norm(node2.q - node1.q)
 
-    def generate_graph(self, waypoints, num_elbow_angles=1):
-        # Get right arm joint positions for self-collision checking
-        full_joint_positions = robot_interface.get_full_joint_positions()
-        right_joint_positions = full_joint_positions[:7]
+    def is_within_joint_limits(self, q):
+        pass
 
+    def generate_graph(self, waypoints, num_elbow_angles=1):
         layers = []
         max_manipulability = -np.inf
 
@@ -154,40 +160,67 @@ class SphereScorer:
 
                 target_pos = target_pose[0:3]
                 target_quat = target_pose[3:]
-                target_rot = T.quat2mat(target_quat)
+                target_rotmat = Rotation.from_quat(target_quat).as_matrix()
+                print(("Target position:", target_pos))
+                print("Target quaternion (xyzw):", target_quat)
+                print(("Target rotation matrix:\n", target_rotmat))
+                # target_pose_lb = (
+                #     robot_interface.convert_global_pose_to_left_arm_base_pose(
+                #         target_pos, target_rot
+                #     )
+                # )
 
-                target_pose_lb = (
-                    robot_interface.convert_global_pose_to_left_arm_base_pose(
-                        target_pos, target_rot
+                # (
+                #     ik_sols,
+                #     is_LS_vec,
+                # ) = robot_interface.ik_manager.compute_left_arm_iks_from_num_elbow_angles(
+                #     target_pos=target_pose_lb[:3, 3],
+                #     target_rot=target_pose_lb[:3, :3],
+                #     num_elbow_angles=num_elbow_angles,
+                #     debug=False,
+                # )
+
+                elbow_angles = np.linspace(
+                    0, 2 * np.pi, num_elbow_angles, endpoint=False
+                )
+                ik_sols = []
+                for idx in range(num_elbow_angles):
+                    sols = self.kinematics_solver.IK_for_microscope(
+                        target_rotmat,
+                        target_pos,
+                        psi=elbow_angles[idx],
                     )
-                )
+                    ik_sols.append(sols)
 
-                (
-                    ik_sols,
-                    is_LS_vec,
-                ) = robot_interface.ik_manager.compute_left_arm_iks_from_num_elbow_angles(
-                    target_pos=target_pose_lb[:3, 3],
-                    target_rot=target_pose_lb[:3, :3],
-                    num_elbow_angles=num_elbow_angles,
-                    debug=False,
-                )
+                ik_sols = np.vstack(ik_sols)
 
                 for sol_idx in range(ik_sols.shape[0]):
                     q_sol = ik_sols[sol_idx, :]
 
                     # Use forward kinematics to get end-effector pose given q_sol
-                    # print(colored("\n=== FK Debug: Tool vs Microscope positions ===", "magenta"))
-                    # print(f"Target position:             {target_pos}")
-                    (
-                        curr_pos,
-                        curr_quat,
-                    ) = robot_interface.ik_manager.compute_left_arm_fk(
-                        robot_interface.env, q_sol
+                    self.internal_plant.SetPositions(self.plant_context, q_sol)
+
+                    X_W_TIP = self.internal_plant.CalcRelativeTransform(
+                        self.plant_context,
+                        self.internal_plant.world_frame(),
+                        self.tip_frame,
                     )
 
-                    curr_pose = np.concatenate((curr_pos, curr_quat))
+                    print(
+                        "Rotation matrix of FK result:\n", X_W_TIP.rotation().matrix()
+                    )
+
+                    microscope_tip_pos = X_W_TIP.translation()  # numpy array [x, y, z]
+                    # get microscope tip quat in xyzw format
+                    microscope_tip_quat = Rotation.from_matrix(
+                        X_W_TIP.rotation().matrix()
+                    ).as_quat()  # xyzw format
+
+                    microscope_tip_pose = np.concatenate(
+                        (microscope_tip_pos, microscope_tip_quat)
+                    )
                     eef_pos_dist, eef_rot_dist = self.eef_distances(
-                        target_pose, curr_pose
+                        target_pose, microscope_tip_pose
                     )
 
                     # Debug: Print first waypoint errors
@@ -199,7 +232,7 @@ class SphereScorer:
                             )
                         )
                         print(f"Target position: {target_pos}")
-                        print(f"FK position:     {curr_pos}")
+                        print(f"FK position:     {microscope_tip_pos}")
                         print(f"Position error:  {eef_pos_dist:.6f} m")
                         print(
                             f"Rotation error:  {eef_rot_dist:.6f} rad ({np.degrees(eef_rot_dist):.3f}°)"
@@ -220,9 +253,9 @@ class SphereScorer:
                         node_idx=node_idx,
                     )
 
-                    # Check if is analytical solution
-                    if not is_LS_vec[sol_idx]:
-                        node.is_analytical_solution = True
+                    # # Check if is analytical solution
+                    # if not is_LS_vec[sol_idx]:
+                    #     node.is_analytical_solution = True
 
                     # Check joint limits
                     if self.within_joint_limits(q_sol):
@@ -417,7 +450,7 @@ def plot_hemisphere_waypoints(
         save_path (str or Path, optional): Path to save the plot image
         save_plot (bool): Whether to save the plot to file
     """
-    fig = plt.figure(figsize=(14, 12))
+    fig = plt.figure(figsizekinematics_solver=(14, 12))
     ax = fig.add_subplot(111, projection="3d")
 
     # Extract positions for plotting (flatten first two dimensions)
@@ -577,10 +610,9 @@ def generate_hemisphere_joint_poses(
     # Params
     # ===================================================================
     save_plot = False
-
     if kinematics_solver is None:
         kinematics_solver = KinematicsSolver()
-
+    sphere_scorer = SphereScorer(station, kinematics_solver)
     # ===================================================================
     # Generate all waypoints on hemisphere
     # ===================================================================
@@ -601,9 +633,9 @@ def generate_hemisphere_joint_poses(
     # ===================================================================
     # Create graph for evaluating least-cost path
     # ===================================================================
-    # layers, avg_eef_pos_dist, avg_eef_rot_dist = self.generate_graph(
-    #     waypoints, robot_interface, num_elbow_positions=num_elbow_positions
-    # )
+    layers, avg_eef_pos_dist, avg_eef_rot_dist = sphere_scorer.generate_graph(
+        waypoints, num_elbow_angles=num_elbow_positions
+    )
 
     # ===================================================================
     # Find least-cost path through graph
@@ -620,10 +652,4 @@ def generate_hemisphere_joint_poses(
     # internal_plant = station.get_internal_plant()
     # internal_sg = station.internal_station.get_scene_graph()
     # context = station.internal_station.CreateDefaultContext()
-
-    # # Try solving IK for first waypoint
-    # q_sols = kinematics_solver.kuka_IK(
-
-    # )
-
     # Test current robot location for self-collisions

@@ -47,8 +47,7 @@
 
     <!-- Link representing microscope tip -->
     <link name="microscope_tip_link">
-      <pose>0 0 0.0375 0 0 0</pose>
-
+      <pose>0 0 0.0375 0 3.14159 0</pose> <!-- tip frame should be same as world when microscope is pointing down -->
       <!-- Collision geometry -->
       <collision name="microscope_tip_collision">
         <geometry>
