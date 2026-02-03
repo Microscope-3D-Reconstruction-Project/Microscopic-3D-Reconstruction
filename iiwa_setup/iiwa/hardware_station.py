@@ -26,6 +26,7 @@ from pydrake.all import (  # MeshcatVisualizer,
     IiwaControlMode,
     LeafSystem,
     MatrixGain,
+    MeshcatVisualizer,
     ModelDirectives,
     ModelInstanceIndex,
     MultibodyPlant,
@@ -250,6 +251,7 @@ class InternalStationDiagram(Diagram):
         self._iiwa_controller_plant.Finalize()
 
         temp_builder = DiagramBuilder()
+
         (
             self._optimization_plant,
             self._optimization_scene_graph,
@@ -271,6 +273,16 @@ class InternalStationDiagram(Diagram):
         # Finalize the plant BEFORE building the diagram
         self._optimization_plant.Finalize()
 
+        # ADD THIS: Create meshcat for optimization plant visualization
+        self._optimization_meshcat = StartMeshcat()
+
+        # ADD THIS: Add visualizer to the optimization diagram
+        MeshcatVisualizer.AddToBuilder(
+            temp_builder,
+            self._optimization_scene_graph,
+            self._optimization_meshcat,
+        )
+
         # Build the diagram (this creates a mini-diagram just for collision queries)
         self._optimization_diagram = temp_builder.Build()
 
@@ -281,6 +293,12 @@ class InternalStationDiagram(Diagram):
         self._optimization_plant_context = (
             self._optimization_diagram.GetSubsystemContext(
                 self._optimization_plant, self._optimization_diagram_context
+            )
+        )
+
+        self._optimization_diagram_sg_context = (
+            self._optimization_diagram.GetSubsystemContext(
+                self._optimization_scene_graph, self._optimization_diagram_context
             )
         )
         # =====================================================
@@ -321,11 +339,26 @@ class InternalStationDiagram(Diagram):
     def get_plant_context(self) -> Context:
         return self._plant_updater.get_plant_context()
 
+    def get_optimization_diagram(self) -> Diagram:
+        return self._optimization_diagram
+
+    def get_optimization_diagram_context(self) -> Context:
+        return self._optimization_diagram_context
+
     def get_optimization_plant(self) -> MultibodyPlant:
         return self._optimization_plant
 
     def get_optimization_plant_context(self) -> Context:
         return self._optimization_plant_context
+
+    def get_optimization_diagram_sg(self) -> SceneGraph:
+        return self._optimization_scene_graph
+
+    def get_optimization_diagram_sg_context(self) -> Context:
+        return self._optimization_diagram_sg_context
+
+    def get_optimization_meshcat(self):
+        return self._optimization_meshcat
 
     def get_iiwa_controller_plant(self) -> MultibodyPlant:
         return self._iiwa_controller_plant
@@ -362,9 +395,6 @@ class IiwaHardwareStationDiagram(Diagram):
         """
         super().__init__()
 
-        project_dir = Path(__file__).parent.parent
-        microscope_mount_file = project_dir / "models" / "microscope_mount.sdf"
-
         self._use_hardware = use_hardware
         if isinstance(control_mode, str):
             control_mode = ParseIiwaControlMode(control_mode)
@@ -385,6 +415,7 @@ class IiwaHardwareStationDiagram(Diagram):
             ),
         )
         self.internal_scene_graph = self.internal_station.get_scene_graph()
+        self.optimization_meshcat = self.internal_station.get_optimization_meshcat()
 
         # External Station
         self.external_meshcat = StartMeshcat()

@@ -41,7 +41,7 @@ from iiwa_setup.util.traj_planning import compute_simple_traj_from_q1_to_q2
 from iiwa_setup.util.visualizations import draw_sphere
 
 # Personal files
-from scripts.hemisphere_solver import generate_hemisphere_joint_poses
+from scripts.hemisphere_solver import SphereScorer, generate_hemisphere_joint_poses
 from scripts.kuka_geo_kin import KinematicsSolver
 
 
@@ -158,15 +158,17 @@ def main(use_hardware: bool) -> None:
     )
 
     kinematics_solver = KinematicsSolver(station)
-    test = generate_hemisphere_joint_poses(
-        station=station,
-        center=hemisphere_pos,
-        radius=0.15,
-        num_poses=30,
-        num_rotations_per_pose=7,
-        num_elbow_positions=10,
-        kinematics_solver=kinematics_solver,
-    )
+    # test = generate_hemisphere_joint_poses(
+    #     station=station,
+    #     center=hemisphere_pos,
+    #     radius=0.15,
+    #     num_poses=30,
+    #     num_rotations_per_pose=7,
+    #     num_elbow_positions=10,
+    #     kinematics_solver=kinematics_solver,
+    #     simulator=simulator,
+    # )
+    sphere_scorer = SphereScorer(station, kinematics_solver)
 
     # ====================================================================
     # Main Simulation Loop
@@ -175,6 +177,17 @@ def main(use_hardware: bool) -> None:
     while station.internal_meshcat.GetButtonClicks("Stop Simulation") < 1:
         if station.internal_meshcat.GetButtonClicks("Move to Goal") > move_clicks:
             move_clicks = station.internal_meshcat.GetButtonClicks("Move to Goal")
+
+            # test if self-collision
+            # Get current q through teleop values
+            teleop_context = diagram.GetSubsystemContext(
+                teleop, simulator.get_context()
+            )
+            q_current = teleop.get_output_port().Eval(teleop_context)
+            print("Current joint positions:", q_current)
+
+            collision = sphere_scorer.is_in_self_collision(q_current)
+            print("Self-collision:", collision)
 
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.1)
 

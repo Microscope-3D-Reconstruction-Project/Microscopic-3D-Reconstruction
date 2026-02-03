@@ -4,6 +4,8 @@ Hemisphere scanning solver
 Authors: Roman Mineyev
 """
 
+import time
+
 # Other
 from pathlib import Path
 
@@ -71,10 +73,38 @@ class SphereScorer:
 
         self.kinematics_solver = kinematics_solver
 
+        # All Drake station components
         self.station = station
-        self.internal_plant = station.get_internal_plant()
-        self.plant_context = station.get_internal_plant_context()
-        self.tip_frame = self.internal_plant.GetFrameByName("microscope_tip_link")
+        self.internal_station = self.station.internal_station
+        # self.internal_plant = station.get_internal_plant()
+        # self.plant_context = station.get_internal_plant_context()
+        # self.internal_sg = self.internal_plant.get_scene_graph()
+
+        # internal_station_diagram_context = self.station.internal_station.CreateDefaultContext()
+        # scene_graph_context = self.internal_sg.GetMyContextFromRoot(internal_station_diagram_context)
+
+        self.optimization_plant = self.internal_station.get_optimization_plant()
+        self.optimization_plant_context = (
+            self.internal_station.get_optimization_plant_context()
+        )
+        self.optimization_diagram = self.internal_station.get_optimization_diagram()
+        self.optimization_diagram_context = (
+            self.internal_station.get_optimization_diagram_context()
+        )
+        self.optimization_diagram_sg = (
+            self.internal_station.get_optimization_diagram_sg()
+        )
+        self.optimization_diagram_sg_context = (
+            self.internal_station.get_optimization_diagram_sg_context()
+        )
+
+        # Internal station
+        # self.internal_diagram_context = self.station.internal_station.CreateDefaultContext()
+        # self.internal_plant_updater = self.station.internal_station.GetSubsystemByName("plant_updater")
+        # self.updater_context = self.station.internal_station.get_plant_context()
+
+        # Frame
+        self.tip_frame = self.optimization_plant.GetFrameByName("microscope_tip_link")
 
     # ===================================================================
     # Cost function components
@@ -142,7 +172,39 @@ class SphereScorer:
     def is_within_joint_limits(self, q):
         pass
 
-    def generate_graph(self, waypoints, num_elbow_angles=1):
+    def is_in_self_collision(self, q):
+        # # 1) Set context to q
+        # self.optimization_plant.SetPositions(self.internal_pla, q)
+        # # 2) Call scene graph to check for collisions given this new context
+        # query_object = self.optimization_plant_sg.get_query_output_port().Eval(scene_graph_context)
+        # has_collision = query_object.HasCollisions()
+
+        # 1) Set context to q
+        self.optimization_plant.SetPositions(self.optimization_plant_context, q)
+        # 2) Call scene graph to check for collisions given this new context
+        query_object = self.optimization_diagram_sg.get_query_output_port().Eval(
+            self.optimization_diagram_sg_context
+        )
+        has_collision = query_object.HasCollisions()
+        # 3) Visualize for sanity check
+
+        self.optimization_diagram.ForcedPublish(self.optimization_diagram_context)
+        print(f"Visualizing q: {q}")
+        print(f"Collision: {has_collision}")
+        time.sleep(0.01)  # Pause to let you see it
+
+        print("Is there a collision?", has_collision)
+        return has_collision
+
+    def generate_graph(self, waypoints, num_elbow_angles=1, simulator=None):
+        """
+        Generate graph of IK solutions for hemisphere scanning. This graph is traversed with Dijksra's
+        later to find the optimal path.
+
+        Args:
+            waypoints (list): List of waypoints, each waypoint is a list of target poses.
+            num_elbow_angles (int): Number of elbow angles to sample for each waypoint.
+        """
         layers = []
         max_manipulability = -np.inf
 
@@ -155,31 +217,11 @@ class SphereScorer:
             layer_nodes = []
 
             for node_idx, target_pose in enumerate(waypoint_set):
-                # TODO: Compute all IK solutions for this waypoint
-                # TODO: Only include the IK solutions that are collision-free and within joint limits
-
                 target_pos = target_pose[0:3]
                 target_quat = target_pose[3:]
                 target_rotmat = Rotation.from_quat(target_quat).as_matrix()
-                print(("Target position:", target_pos))
-                print("Target quaternion (xyzw):", target_quat)
-                print(("Target rotation matrix:\n", target_rotmat))
-                # target_pose_lb = (
-                #     robot_interface.convert_global_pose_to_left_arm_base_pose(
-                #         target_pos, target_rot
-                #     )
-                # )
 
-                # (
-                #     ik_sols,
-                #     is_LS_vec,
-                # ) = robot_interface.ik_manager.compute_left_arm_iks_from_num_elbow_angles(
-                #     target_pos=target_pose_lb[:3, 3],
-                #     target_rot=target_pose_lb[:3, :3],
-                #     num_elbow_angles=num_elbow_angles,
-                #     debug=False,
-                # )
-
+                # Compute IK for multiple elbow angles
                 elbow_angles = np.linspace(
                     0, 2 * np.pi, num_elbow_angles, endpoint=False
                 )
@@ -198,16 +240,14 @@ class SphereScorer:
                     q_sol = ik_sols[sol_idx, :]
 
                     # Use forward kinematics to get end-effector pose given q_sol
-                    self.internal_plant.SetPositions(self.plant_context, q_sol)
-
-                    X_W_TIP = self.internal_plant.CalcRelativeTransform(
-                        self.plant_context,
-                        self.internal_plant.world_frame(),
-                        self.tip_frame,
+                    self.optimization_plant.SetPositions(
+                        self.optimization_plant_context, q_sol
                     )
 
-                    print(
-                        "Rotation matrix of FK result:\n", X_W_TIP.rotation().matrix()
+                    X_W_TIP = self.optimization_plant.CalcRelativeTransform(
+                        self.optimization_plant_context,
+                        self.optimization_plant.world_frame(),
+                        self.tip_frame,
                     )
 
                     microscope_tip_pos = X_W_TIP.translation()  # numpy array [x, y, z]
@@ -253,28 +293,26 @@ class SphereScorer:
                         node_idx=node_idx,
                     )
 
-                    # # Check if is analytical solution
-                    # if not is_LS_vec[sol_idx]:
-                    #     node.is_analytical_solution = True
-
                     # Check joint limits
-                    if self.within_joint_limits(q_sol):
+                    if self.is_within_joint_limits(q_sol):
                         node.is_within_joint_limits = True
 
                     # Check self-collision
-                    full_q_sol = np.concatenate((right_joint_positions, q_sol))
-                    is_in_self_collision = (
-                        robot_interface.safety_manager.collision_exists(
-                            robot_interface.env, full_q_sol
-                        )
-                    )
-                    if is_in_self_collision:
-                        node.is_in_self_collision = True
+                    # full_q_sol = np.concatenate((right_joint_positions, q_sol))
+                    # is_in_self_collision = (
+                    #     robot_interface.safety_manager.collision_exists(
+                    #         robot_interface.env, full_q_sol
+                    #     )
+                    # )
+
+                    node.is_in_self_collision = self.is_in_self_collision(
+                        q_sol, simulator=simulator
+                    )  # TODO: Integrate with aboce, since it already runs SetPositions()
 
                     # Add manipulability score
-                    node.manipulability = self.manipulability_score(q_sol)
-                    if node.manipulability > max_manipulability:
-                        max_manipulability = node.manipulability
+                    # node.manipulability = self.manipulability_score(q_sol)
+                    # if node.manipulability > max_manipulability:
+                    #     max_manipulability = node.manipulability
 
                     # Update running averages
                     total_eef_pos_dist += eef_pos_dist
@@ -285,21 +323,16 @@ class SphereScorer:
 
             # Filter out nodes as needed
             total_sols = len(layer_nodes)
-            # Filter out joint limit violations
-            layer_nodes = [node for node in layer_nodes if node.is_within_joint_limits]
-            invalid_joint_limit_sols = total_sols - len(layer_nodes)
+
             # # Filter out self-collisions
             layer_nodes = [
                 node for node in layer_nodes if not node.is_in_self_collision
             ]
-            num_self_collision_sols = (
-                total_sols - invalid_joint_limit_sols - len(layer_nodes)
-            )
+            num_self_collision_sols = total_sols - len(layer_nodes)
 
             # Cool visualization of total solutions vs. valid solutions
             print(colored("Layer " + str(layer_idx) + " solutions breakdown:", "cyan"))
             print(f"  Total IK solutions:                 {total_sols}")
-            print(f"  Invalid joint limit solutions:     -{invalid_joint_limit_sols}")
             print(f"  Self-collision solutions:          -{num_self_collision_sols}")
             print(f"                                    _____")
             print(f"  Valid solutions remaining:         ={len(layer_nodes)}\n")
@@ -601,6 +634,7 @@ def generate_hemisphere_joint_poses(
     num_rotations_per_pose: int,
     num_elbow_positions: int,
     kinematics_solver=None,
+    simulator=None,
 ):
     """
     Generate joint poses for scanning hemisphere, while optimizing these parameters:
@@ -634,7 +668,9 @@ def generate_hemisphere_joint_poses(
     # Create graph for evaluating least-cost path
     # ===================================================================
     layers, avg_eef_pos_dist, avg_eef_rot_dist = sphere_scorer.generate_graph(
-        waypoints, num_elbow_angles=num_elbow_positions
+        waypoints,
+        num_elbow_angles=num_elbow_positions,
+        simulator=simulator,
     )
 
     # ===================================================================
