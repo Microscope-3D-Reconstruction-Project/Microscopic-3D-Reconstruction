@@ -123,6 +123,28 @@ class KinematicsSolver:
 
         return {"P": kin_P, "H": kin_H, "joint_type": joint_type}
 
+    def IK_for_microscope_multiple_elbows(self, R_0M, p_0M, num_elbow_angles=50):
+        """
+        Solve the inverse kinematics for the KUKA LBR iiwa 14 R820 robot with a microscope mount, sampling multiple elbow configurations.
+
+        Args:
+            R_0M (np.ndarray): 3x3 rotation matrix from base to microscope mount.
+            p_0M (np.ndarray): 3-element position vector of the microscope mount in the base frame.
+            num_elbow_angles (int): Number of elbow angle samples to generate.
+
+        Returns:
+            Qs (np.ndarray): An Nx7 array of N IK solutions, where each row is a 7-element vector of joint angles.
+        """
+
+        Qs = []
+        elbow_angles = np.linspace(-np.pi, np.pi, num_elbow_angles)
+        for i in range(num_elbow_angles):
+            Q = self.IK_for_microscope(R_0M, p_0M, psi=elbow_angles[i])
+            Qs.append(Q)
+
+        Qs = np.vstack(Qs) if Qs else np.array([]).reshape(0, 7)
+        return Qs
+
     def IK_for_microscope(self, R_0M, p_0M, psi=None):
         """
         Solve the inverse kinematics for the KUKA LBR iiwa 14 R820 robot with a microscope mount.
@@ -153,6 +175,46 @@ class KinematicsSolver:
 
         return self.kuka_IK(R_07, p_07, sew_stereo, psi)
 
+    def kuka_IK_for_multiple_elbows(self, R_07, p_07, num_elbow_angles=50):
+        """
+        Solve IK for multiple elbow configurations by sampling the SEW angle.
+        Useful to later parse and find the closest solution to current joint angles.
+        """
+
+        Qs = []
+        elbow_angles = np.linspace(-np.pi, np.pi, num_elbow_angles)
+
+        r, v = np.array([1, 0, 0]), np.array([0, 1, 0])
+        sew_stereo = SEWStereo(r, v)
+        for i in range(num_elbow_angles):
+            Q = self.kuka_IK(R_07, p_07, sew_stereo, elbow_angles[i])
+            Qs.append(Q)
+
+        Qs = np.vstack(Qs) if Qs else np.array([]).reshape(0, 7)
+        return Qs
+
+    def find_closest_solution(self, Q, q_current):
+        """
+        Find the closest IK solution to the current joint configuration.
+
+        Args:
+            Q (np.ndarray): An Nx7 array of N IK solutions.
+            q_current (np.ndarray): A 7-element vector of current joint angles.
+
+        Returns:
+            q_closest (np.ndarray): A 7-element vector of the closest joint angles.
+        """
+        if Q.shape[0] == 0:
+            raise ValueError("No IK solutions found.")
+
+        # Calculate the distance from each solution to the current joint configuration
+        distances = np.linalg.norm(Q - q_current, axis=1)
+
+        # Find the index of the closest solution
+        closest_index = np.argmin(distances)
+
+        return Q[closest_index]
+
     def kuka_IK(self, R_07, p_07, sew_class, psi):
         """
         Solve the inverse kinematics for the KUKA LBR iiwa 14 R820 robot using geometric methods.
@@ -162,6 +224,9 @@ class KinematicsSolver:
             p_07 (np.ndarray): 3-element position vector of link 7 in the base frame.
             sew_class: An instance of the SEW class for solving the shoulder-elbow-wrist configuration.
             psi (float): The SEW angle.
+
+        Returns:
+            Q (np.ndarray): An Nx7 array of N IK solutions, where each row is a 7-element vector of joint angles.
         """
 
         kin = self.kin
