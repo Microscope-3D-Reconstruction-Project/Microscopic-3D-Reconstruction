@@ -176,7 +176,7 @@ class KinematicsSolver:
         p_07 = p_0M - p_7M
 
         # Solve IK using standard kuka_IK method
-        r, v = np.array([1, 0, 0]), np.array([0, 1, 0])
+        r, v = np.array([-1, 0, 0]), np.array([0, 1, 0])
         sew_stereo = SEWStereo(r, v)
 
         # # Print what values we are solving for:
