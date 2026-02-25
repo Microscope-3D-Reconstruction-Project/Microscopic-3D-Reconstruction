@@ -227,15 +227,15 @@ class InternalStationDiagram(Diagram):
             collision=False,
         )
 
-        leeway = 0.02
-        add_sphere(  # collision sphere within scan_sphere
-            self._plant,
-            name="collision_vis_sphere",
-            position=self.hemisphere_pos,
-            radius=self.hemisphere_radius - leeway,
-            color=[1.0, 0.0, 0.0, 0.2],
-            collision=False,
-        )
+        # leeway = 0.02
+        # add_sphere(  # collision sphere within scan_sphere
+        #     self._plant,
+        #     name="collision_vis_sphere",
+        #     position=self.hemisphere_pos,
+        #     radius=self.hemisphere_radius - leeway,
+        #     color=[1.0, 0.0, 0.0, 0.2],
+        #     collision=False,
+        # )
 
         self._plant.Finalize()
 

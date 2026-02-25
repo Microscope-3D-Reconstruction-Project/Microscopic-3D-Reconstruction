@@ -19,6 +19,8 @@ pyyaml = "^6.0.1"
 scipy = "<1.17"
 termcolor = "^3.3.0"
 opencv-python = "^4.13.0.92"
+pandas = ">=2.0,<3.0"
+plotly = "^6.5.2"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.4.0"

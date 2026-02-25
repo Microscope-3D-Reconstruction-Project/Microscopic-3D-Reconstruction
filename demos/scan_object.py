@@ -22,6 +22,7 @@ from pydrake.all import (
     ConstantVectorSource,
     DiagramBuilder,
     FrameIndex,
+    LogVectorOutput,
     MeshcatVisualizer,
     PiecewisePolynomial,
     Rgba,
@@ -40,9 +41,13 @@ from utils.kuka_geo_kin import KinematicsSolver
 class State(Enum):
     IDLE = auto()
     WAITING_FOR_NEXT_SCAN = auto()
-    MOVING = auto()
     MOVING_TO_START = auto()
-    COMPUTING_IK = auto()
+    MOVING_ALONG_HEMISPHERE = auto()
+    MOVING_DOWN_OPTICAL_AXIS = auto()
+    MOVING_AWAY_FROM_OPTICAL_AXIS = auto()
+    COMPUTING_IKS = auto()
+    PAUSE = auto()
+    DONE = auto()
 
 
 def plot_path_with_frames(
@@ -319,165 +324,7 @@ def plot_hemisphere_waypoints(
     )
 
 
-# def get_pose_from_scan_point(scan_point):
-#     """
-#     Given a scan point on the hemisphere, return a desired end-effector pose (rotation and position) for that point.
-#     For simplicity, we can use the sphere_frame function to get a rotation matrix that aligns the end-effector z-axis with the surface normal at that point, and x/y axes tangentially.
-
-#     Args:
-#         scan_point: (3,) xyz position of the scan point position
-#     Returns:
-#         target_pose: RigidTransform representing the desired end-effector pose
-#     """
-
-#     target_rot = sphere_frame(scan_point)
-#     target_pos = scan_point
-
-#     return RigidTransform(RotationMatrix(target_rot), target_pos)
-
-
-def generate_hemisphere_waypoints(center, radius, hemisphere_axis, num_scan_points=30):
-    """
-    Generate N approximately uniformly distributed waypoints on a hemisphere.
-
-    Args:
-        center: (3,) array of hemisphere center
-        radius: float, hemisphere radius
-        hemisphere_axis: np.array of shape (3,), axis defining the hemisphere (e.g. [1, 0, 0] for x-axis hemisphere)
-        num_scan_points: int, number of waypoints
-    """
-
-    waypoints = []
-    phi_golden = (1 + np.sqrt(5)) / 2  # golden ratio
-
-    # Normalize hemisphere_axis
-    hemisphere_axis = hemisphere_axis / np.linalg.norm(hemisphere_axis)
-
-    for k in range(num_scan_points):
-        # Generate points on canonical hemisphere (top at [0, 0, 1])
-        z_s = 1 - k / (num_scan_points - 1)  # height from top (1) to equator (0)
-        r_xy = np.sqrt(1 - z_s**2)  # radius in xy-plane
-        theta = 2 * np.pi * k / phi_golden  # golden angle
-
-        x_s = r_xy * np.cos(theta)
-        y_s = r_xy * np.sin(theta)
-
-        # Point on unit hemisphere with top at [0, 0, 1]
-        point_canonical = np.array([x_s, y_s, z_s])
-
-        # Compute rotation from [0, 0, 1] to hemisphere_axis
-        z_ref = np.array([0.0, 0.0, 1.0])
-
-        # If hemisphere_axis is close to [0, 0, 1], no rotation needed
-        if np.allclose(hemisphere_axis, z_ref):
-            point_rotated = point_canonical
-        # If hemisphere_axis is close to [0, 0, -1], rotate 180 deg around x-axis
-        elif np.allclose(hemisphere_axis, -z_ref):
-            point_rotated = np.array(
-                [point_canonical[0], -point_canonical[1], -point_canonical[2]]
-            )
-        else:
-            # Compute rotation axis (perpendicular to both vectors)
-            rotation_axis = np.cross(z_ref, hemisphere_axis)
-            rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
-
-            # Compute rotation angle
-            cos_angle = np.dot(z_ref, hemisphere_axis)
-            angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
-
-            # Rodrigues' rotation formula
-            K = np.array(
-                [
-                    [0, -rotation_axis[2], rotation_axis[1]],
-                    [rotation_axis[2], 0, -rotation_axis[0]],
-                    [-rotation_axis[1], rotation_axis[0], 0],
-                ]
-            )
-            R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
-
-            point_rotated = R @ point_canonical
-
-        # Scale by radius and translate by center
-        point_world = center + radius * point_rotated
-
-        rotation = RotationMatrix(sphere_frame(point_world, hemisphere_axis, center))
-        waypoint = RigidTransform(rotation, point_world)
-        waypoints.append(waypoint)
-
-    return waypoints
-
-
-def generate_waypoints_along_hemisphere(
-    center, radius, pose_curr, pose_target, hemisphere_axis, num_spirals=2
-):
-    """
-    Args:
-        - center: (3,) array of hemisphere center
-        - radius: radius of hemisphere
-        - pose_curr: RigidTransform of current end-effector pose
-        - pose_target: RigidTransform of desired end-effector pose on hemisphere
-    Returns:
-        - path_points: (3, N) array of positions along the path
-        - path_rots: List of (3, 3) rotation matrices at each point along the path
-    """
-
-    # Step 1: Generate shortest path along hemisphere surface
-    A = pose_curr.translation()
-    B = pose_target.translation()
-    path_points, t = hemisphere_slerp(A, B, center, radius)
-
-    # Generate rotation matrices along the path using the sphere_frame function
-    path_rots = []
-    num_points = path_points.shape[1]
-    for i in range(num_points):
-        p = path_points[:, i]
-        R = sphere_frame(p, hemisphere_axis, center)
-        path_rots.append(R)
-
-    print("t_final for path (slerp): ", t[-1])
-    print(f"Number of time points: {len(t)}")
-    print(f"Path points shape: {path_points.shape}")
-    print(f"Number of rotations: {len(path_rots)}")
-
-    return path_points, path_rots, t
-
-
-def generate_IK_solutions_for_path(path_points, path_rots, kinematics_solver, q_init):
-    trajectory_joint_poses = []
-    q_prev = (
-        q_init  # Try to match first point to current joint configuration for smoothness
-    )
-
-    for i in range(len(path_points.T)):
-        eef_pos = path_points[:, i]  # Shift spiral to be around the hemisphere center
-        eef_rot = path_rots[i]  # Use the rotation matrix from the path
-        if i == 0:
-            Q, elbow_angles = kinematics_solver.IK_for_microscope_multiple_elbows(
-                eef_rot, eef_pos, num_elbow_angles=100, track_elbow_angle=True
-            )
-            q_curr, idx = kinematics_solver.find_closest_solution(
-                Q, q_prev, return_index=True
-            )
-            elbow_angle = elbow_angles[idx]
-
-        else:
-            Q = kinematics_solver.IK_for_microscope(  # NOTE: Just using 0 elbow angle for now
-                eef_rot, eef_pos, psi=elbow_angle
-            )
-            # Choose the solution closest to the previous one for smoothness
-            q_curr = kinematics_solver.find_closest_solution(Q, q_prev)
-        # else:
-        #     q_curr = Q[0]  # Just pick the first solution if no previous solution exists
-
-        trajectory_joint_poses.append(q_curr)
-        q_prev = q_curr
-
-    trajectory_joint_poses = np.array(trajectory_joint_poses).T  # Shape (7, num_points)
-
-    return trajectory_joint_poses
-
-
-def hemisphere_slerp(A, B, center, radius, speed_factor=0.5):
+def hemisphere_slerp(A, B, center, radius, speed_factor=1.0):
     """
     Interpolate along the shortest path on a hemisphere between points A and B.
 
@@ -574,7 +421,7 @@ def sphere_frame(p, hemisphere_axis, center):
         elif np.dot(z, g) < -0.99:
             g = np.array([0.0, 0.0, 1.0])
     elif np.allclose(hemisphere_axis, np.array([-1, 0, 0])):
-        g = np.array([1.0, 0.0, 0.0])
+        g = np.array([0.0, 0.0, 1.0])
         if np.dot(z, g) > 0.99:
             g = np.array([0.0, 0.0, -1.0])
         elif np.dot(z, g) < -0.99:
@@ -611,6 +458,148 @@ def sphere_frame(p, hemisphere_axis, center):
     return R
 
 
+def generate_hemisphere_waypoints(
+    center, radius, hemisphere_axis, coverage=0.2, num_scan_points=30
+):
+    """
+    Generate N approximately uniformly distributed waypoints on a hemisphere.
+
+    Args:
+        center: (3,) array of hemisphere center
+        radius: float, hemisphere radius
+        hemisphere_axis: np.array of shape (3,), axis defining the hemisphere (e.g. [1, 0, 0] for x-axis hemisphere)
+        coverage: float between 0 and 1, fraction of hemisphere to cover (default 0.5 for half hemisphere)
+        num_scan_points: int, number of waypoints
+    """
+
+    waypoints = []
+    phi_golden = (1 + np.sqrt(5)) / 2  # golden ratio
+
+    # Normalize hemisphere_axis
+    hemisphere_axis = hemisphere_axis / np.linalg.norm(hemisphere_axis)
+
+    for k in range(num_scan_points):
+        # Generate points on canonical hemisphere (top at [0, 0, 1])
+        z_s = (
+            1 - k / (num_scan_points - 1) * coverage
+        )  # height from top (1) to equator (0)
+        r_xy = np.sqrt(1 - z_s**2)  # radius in xy-plane
+        theta = 2 * np.pi * k / phi_golden  # golden angle
+
+        x_s = r_xy * np.cos(theta)
+        y_s = r_xy * np.sin(theta)
+
+        # Point on unit hemisphere with top at [0, 0, 1]
+        point_canonical = np.array([x_s, y_s, z_s])
+
+        # Compute rotation from [0, 0, 1] to hemisphere_axis
+        z_ref = np.array([0.0, 0.0, 1.0])
+
+        # If hemisphere_axis is close to [0, 0, 1], no rotation needed
+        if np.allclose(hemisphere_axis, z_ref):
+            point_rotated = point_canonical
+        # If hemisphere_axis is close to [0, 0, -1], rotate 180 deg around x-axis
+        elif np.allclose(hemisphere_axis, -z_ref):
+            point_rotated = np.array(
+                [point_canonical[0], -point_canonical[1], -point_canonical[2]]
+            )
+        else:
+            # Compute rotation axis (perpendicular to both vectors)
+            rotation_axis = np.cross(z_ref, hemisphere_axis)
+            rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+
+            # Compute rotation angle
+            cos_angle = np.dot(z_ref, hemisphere_axis)
+            angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+
+            # Rodrigues' rotation formula
+            K = np.array(
+                [
+                    [0, -rotation_axis[2], rotation_axis[1]],
+                    [rotation_axis[2], 0, -rotation_axis[0]],
+                    [-rotation_axis[1], rotation_axis[0], 0],
+                ]
+            )
+            R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+
+            point_rotated = R @ point_canonical
+
+        # Scale by radius and translate by center
+        point_world = center + radius * point_rotated
+
+        rotation = RotationMatrix(sphere_frame(point_world, hemisphere_axis, center))
+        waypoint = RigidTransform(rotation, point_world)
+        waypoints.append(waypoint)
+
+    return waypoints
+
+
+def generate_poses_along_hemisphere(
+    center, radius, pose_curr, pose_target, hemisphere_axis, num_spirals=2
+):
+    """
+    Args:
+        - center: (3,) array of hemisphere center
+        - radius: radius of hemisphere
+        - pose_curr: RigidTransform of current end-effector pose
+        - pose_target: RigidTransform of desired end-effector pose on hemisphere
+    Returns:
+        - path_points: (3, N) array of positions along the path
+        - path_rots: List of (3, 3) rotation matrices at each point along the path
+    """
+
+    # Step 1: Generate shortest path along hemisphere surface
+    A = pose_curr.translation()
+    B = pose_target.translation()
+    path_points, t = hemisphere_slerp(A, B, center, radius)
+
+    # Generate rotation matrices along the path using the sphere_frame function
+    path_rots = []
+    num_points = path_points.shape[1]
+    for i in range(num_points):
+        p = path_points[:, i]
+        R = sphere_frame(p, hemisphere_axis, center)
+        path_rots.append(R)
+
+    return path_points, path_rots, t
+
+
+def generate_waypoints_down_optical_axis(
+    pose_curr: RigidTransform, num_points: int = 100, t_final: float = 2
+):
+    """
+    Generate waypoints along the optical axis of the current end-effector pose.
+
+    Args:
+        pose_curr: RigidTransform of current end-effector pose
+        num_points: Number of points to generate along the optical axis
+        t_final: Total time to traverse the path (for timing the trajectory)
+
+    Returns:
+        List of RigidTransform representing the waypoints
+    """
+    path_points = []
+    path_rots = []
+
+    total_distance = 0.025  # Total distance to travel down optical axis
+
+    for i in range(num_points):
+        # Move down the optical axis (negative z direction in end-effector frame)
+        delta_z = (
+            -total_distance * i / num_points
+        )  # Move down 10 cm over the course of the path
+        delta_transform = RigidTransform(
+            np.array([0, 0, delta_z])
+        )  # No rotation change, just translation down z-axis
+        waypoint = pose_curr @ delta_transform  # Apply the delta to the current pose
+        path_points.append(waypoint.translation())
+        path_rots.append(waypoint.rotation().matrix())
+
+    path_points = np.array(path_points).T  # Shape (3, num_points)
+
+    return path_points, path_rots, np.linspace(0, t_final, num_points)
+
+
 def find_target_pose_on_hemisphere(center, latitude_deg, longitude_deg, radius):
     """
     Given a hemisphere defined by its center and radius, find the target end-effector pose on the hemisphere surface corresponding to the specified latitude and longitude angles.
@@ -635,6 +624,96 @@ def find_target_pose_on_hemisphere(center, latitude_deg, longitude_deg, radius):
     target_rot = sphere_frame(target_pos, center)
 
     return target_rot, target_pos
+
+
+def generate_IK_solutions_for_path(
+    path_points, path_rots, kinematics_solver, q_init, elbow_angle
+):
+    trajectory_joint_poses = []
+    q_prev = (
+        q_init  # Try to match first point to current joint configuration for smoothness
+    )
+
+    for i in range(len(path_points.T)):
+        eef_pos = path_points[:, i]  # Shift spiral to be around the hemisphere center
+        eef_rot = path_rots[i]  # Use the rotation matrix from the path
+        Q = kinematics_solver.IK_for_microscope(eef_rot, eef_pos, psi=elbow_angle)
+        q_curr = kinematics_solver.find_closest_solution(
+            Q, q_prev
+        )  # Choose closest solution to previous point for smoothness
+
+        trajectory_joint_poses.append(q_curr)
+        q_prev = q_curr
+
+    trajectory_joint_poses = np.array(trajectory_joint_poses).T  # Shape (7, num_points)
+
+    return trajectory_joint_poses
+
+
+def compute_hemisphere_traj_async(
+    hemisphere_pos,
+    hemisphere_radius,
+    hemisphere_axis,
+    eef_pose,
+    pose_target,
+    kinematics_solver,
+    q_curr,
+    elbow_angle,
+    ik_result,
+):
+    hemisphere_points, hemisphere_rots, hemisphere_t = generate_poses_along_hemisphere(
+        center=hemisphere_pos,
+        radius=hemisphere_radius,
+        pose_curr=eef_pose,
+        pose_target=pose_target,
+        hemisphere_axis=hemisphere_axis,
+    )
+
+    trajectory_joint_poses = generate_IK_solutions_for_path(
+        path_points=hemisphere_points,
+        path_rots=hemisphere_rots,
+        kinematics_solver=kinematics_solver,
+        q_init=q_curr,
+        elbow_angle=elbow_angle,
+    )
+
+    # Turn into piecewise polynomial trajectory
+    traj = PiecewisePolynomial.FirstOrderHold(hemisphere_t, trajectory_joint_poses)
+    print(f"Trajectory start_time: {traj.start_time()}, end_time: {traj.end_time()}")
+
+    # Store results
+    ik_result["trajectory"] = traj
+    ik_result["ready"] = True
+    print(colored("✓ IK computation complete!", "green"))
+
+
+def compute_optical_axis_traj_async(
+    pose_curr,
+    kinematics_solver,
+    q_curr,
+    elbow_angle,
+    ik_result,
+):
+    path_points, path_rots, t = generate_waypoints_down_optical_axis(pose_curr)
+
+    trajectory_joint_poses = generate_IK_solutions_for_path(
+        path_points=path_points,
+        path_rots=path_rots,
+        kinematics_solver=kinematics_solver,
+        q_init=q_curr,
+        elbow_angle=elbow_angle,
+    )
+
+    # append trajectory to itself but reverese the waypoints to move back up the optical axis
+    trajectory_joint_poses = np.hstack(
+        (trajectory_joint_poses, trajectory_joint_poses[:, ::-1])
+    )
+    t = np.hstack((t, t + t[-1] + t[1]))  # Time for returning back up the optical axis
+    traj = PiecewisePolynomial.FirstOrderHold(t, trajectory_joint_poses)
+
+    ik_result["trajectory"] = traj
+    ik_result["ready"] = True
+    print(colored("✓ Optical axis IK computation complete!", "green"))
 
 
 def main(use_hardware: bool) -> None:
@@ -667,13 +746,18 @@ def main(use_hardware: bool) -> None:
     # ==================================================================
     # Waypoint Generation Setup
     # ==================================================================
-    hemisphere_pos = np.array([0.65, 0.0, 0.34])
-    hemisphere_radius = 0.02
+    hemisphere_pos = np.array([0.7, 0.0, 0.444444])
+    hemisphere_radius = 0.05
     hemisphere_axis = np.array([-1, 0, 0])
+    coverage = 0.2  # Fraction of hemisphere to cover
 
     # Generate waypoints
     hemisphere_waypoints = generate_hemisphere_waypoints(
-        hemisphere_pos, hemisphere_radius, hemisphere_axis, num_scan_points=30
+        hemisphere_pos,
+        hemisphere_radius,
+        hemisphere_axis,
+        num_scan_points=30,
+        coverage=coverage,
     )
     scan_idx = 1
 
@@ -687,7 +771,7 @@ def main(use_hardware: bool) -> None:
         hemisphere_radius,
         hemisphere_axis,
         output_path=heimsphere_waypoints_output_path,
-        visualize=True,
+        visualize=False,
     )
 
     # ===================================================================
@@ -706,6 +790,15 @@ def main(use_hardware: bool) -> None:
             hemisphere_radius=hemisphere_radius,
             use_hardware=use_hardware,
         ),
+    )
+
+    # Log joint positions using station's exported output port
+    from pydrake.systems.primitives import VectorLogSink
+
+    state_logger = builder.AddSystem(VectorLogSink(7))
+    state_logger.set_name("state_logger")
+    builder.Connect(
+        station.GetOutputPort("iiwa.position_measured"), state_logger.get_input_port()
     )
 
     # Create dummy constant position source (using station's default position)
@@ -774,15 +867,36 @@ def main(use_hardware: bool) -> None:
 
     # IK computation thread state
     ik_thread = None
-    ik_result = {"ready": False, "trajectory": None, "trajectory_start_time": None}
+    hemisphere_ik_result = {
+        "ready": False,
+        "trajectory": None,
+        "trajectory_start_time": None,
+    }
+    optical_axis_ik_result = {
+        "ready": False,
+        "trajectory": None,
+        "trajectory_start_time": None,
+    }
+
+    joint_lower_limits = station.get_internal_plant().GetPositionLowerLimits()
+    joint_upper_limits = station.get_internal_plant().GetPositionUpperLimits()
+
+    print(f"Lower limits (rad): {joint_lower_limits}")
+    print(f"Upper limits (rad): {joint_upper_limits}")
+    print(f"Lower limits (deg): {np.rad2deg(joint_lower_limits)}")
+    print(f"Upper limits (deg): {np.rad2deg(joint_upper_limits)}")
 
     while station.internal_meshcat.GetButtonClicks("Stop Simulation") < 1:
-        if (
-            state
-            == State.WAITING_FOR_NEXT_SCAN
-            # and station.internal_meshcat.GetButtonClicks("Execute Trajectory") > num_execute_traj_clicks
-        ):
-            # num_execute_traj_clicks = station.internal_meshcat.GetButtonClicks("Execute Trajectory")
+        if state == State.WAITING_FOR_NEXT_SCAN:
+            # if station.internal_meshcat.GetButtonClicks("Execute Trajectory") > num_execute_traj_clicks:
+            #     num_execute_traj_clicks = station.internal_meshcat.GetButtonClicks("Execute Trajectory")
+
+            if scan_idx >= len(hemisphere_waypoints):
+                print(colored("✓ All scans complete!", "green"))
+                state = State.DONE
+                continue
+
+            print(colored(f"Preparing trajectory for scan #{scan_idx+1}", "grey"))
 
             pose_target = hemisphere_waypoints[scan_idx]
 
@@ -793,130 +907,96 @@ def main(use_hardware: bool) -> None:
             eef_pose = internal_plant.GetFrameByName(
                 "microscope_tip_link"
             ).CalcPoseInWorld(internal_plant_context)
-
-            path_points, path_rots, t = generate_waypoints_along_hemisphere(
-                center=hemisphere_pos,
-                radius=hemisphere_radius,
-                pose_curr=eef_pose,
-                pose_target=pose_target,
-                hemisphere_axis=hemisphere_axis,
-            )
-
-            station.internal_meshcat.SetLine(
-                "desired_spiral_path",
-                path_points,
-                line_width=0.05,
-                rgba=Rgba(1, 1, 1, 1),
-            )
-
-            # Solve for IK solutions in background thread
-            station_context = station.GetMyContextFromRoot(simulator.get_context())
             q_curr = station.GetOutputPort("iiwa.position_measured").Eval(
                 station_context
             )
 
+            # Setup trajectory IK computations in background threads to avoid blocking the main simulation loop
             print(colored("Starting IK computation in background...", "yellow"))
-
-            def compute_ik_async():
-                trajectory_joint_poses = generate_IK_solutions_for_path(
-                    path_points=path_points,
-                    path_rots=path_rots,
-                    kinematics_solver=kinematics_solver,
-                    q_init=q_curr,
-                )
-
-                print(f"Trajectory joint poses shape: {trajectory_joint_poses.shape}")
-                print(f"Time array length: {len(t)}")
-                print(f"Time array: start={t[0]}, end={t[-1]}")
-                print(f"Current robot position: {q_curr}")
-                print(f"First trajectory position: {trajectory_joint_poses[:, 0]}")
-                print(
-                    f"Position error at start: {np.linalg.norm(q_curr - trajectory_joint_poses[:, 0])}"
-                )
-
-                # Turn into piecewise polynomial trajectory
-                traj = PiecewisePolynomial.FirstOrderHold(t, trajectory_joint_poses)
-                print(
-                    f"Trajectory start_time: {traj.start_time()}, end_time: {traj.end_time()}"
-                )
-
-                # Store results
-                ik_result["trajectory"] = traj
-                ik_result["ready"] = True
-                print(colored("✓ IK computation complete!", "green"))
-
-            ik_result["ready"] = False
-            ik_thread = threading.Thread(target=compute_ik_async, daemon=True)
-            ik_thread.start()
-            state = State.COMPUTING_IK
-
-        elif (
-            state == State.IDLE
-            and station.internal_meshcat.GetButtonClicks("Move to Start") > 0
-        ):
-            print(colored("Moving to start", "cyan"))
-
-            station_context = station.GetMyContextFromRoot(simulator.get_context())
-            q_current = station.GetOutputPort("iiwa.position_measured").Eval(
-                station_context
+            hemisphere_ik_result["ready"] = False
+            hemisphere_ik_thread = threading.Thread(
+                target=compute_hemisphere_traj_async,
+                args=(
+                    hemisphere_pos,
+                    hemisphere_radius,
+                    hemisphere_axis,
+                    eef_pose,
+                    pose_target,
+                    kinematics_solver,
+                    q_curr,
+                    elbow_angle,
+                    hemisphere_ik_result,
+                ),
+                daemon=True,
             )
+            hemisphere_ik_thread.start()
 
-            target_pose = hemisphere_waypoints[0]
-            target_rot = target_pose.rotation().matrix()
-            target_pos = target_pose.translation()
-
-            Q = kinematics_solver.IK_for_microscope(
-                target_rot, target_pos, psi=elbow_angle
+            optical_axis_ik_result["ready"] = False
+            optical_axis_ik_thread = threading.Thread(
+                target=compute_optical_axis_traj_async,
+                args=(
+                    pose_target,
+                    kinematics_solver,
+                    q_curr,
+                    elbow_angle,
+                    optical_axis_ik_result,
+                ),
+                daemon=True,
             )
+            optical_axis_ik_thread.start()
 
-            # Step 2) Find IK closest to current joint values
-            station_context = station.GetMyContextFromRoot(simulator.get_context())
-            q_curr = station.GetOutputPort("iiwa.position_measured").Eval(
-                station_context
-            )
-            q_des = kinematics_solver.find_closest_solution(Q, q_curr)
+            state = State.COMPUTING_IKS
 
-            print(colored(f"Goal joint configuration for Start: {q_des}", "yellow"))
+        elif state == State.IDLE:
+            if station.internal_meshcat.GetButtonClicks("Move to Start") > 0:
+                print(colored("Moving to start", "cyan"))
 
-            start_trajectory = create_traj_from_q1_to_q2(
-                station,
-                q_current,
-                q_des,
-            )
-
-            state = State.MOVING_TO_START
-            trajectory_start_time = simulator.get_context().get_time()
-
-        elif state == State.MOVING_TO_START:
-            current_time = simulator.get_context().get_time()
-            traj_time = current_time - trajectory_start_time
-
-            if traj_time <= start_trajectory.end_time():
-                q_desired = start_trajectory.value(traj_time)
-                station_context = station.GetMyMutableContextFromRoot(
-                    simulator.get_mutable_context()
+                station_context = station.GetMyContextFromRoot(simulator.get_context())
+                q_current = station.GetOutputPort("iiwa.position_measured").Eval(
+                    station_context
                 )
-                station.GetInputPort("iiwa.position").FixValue(
-                    station_context, q_desired
-                )
-            else:
-                print(colored("✓ Trajectory execution complete!", "green"))
-                state = State.WAITING_FOR_NEXT_SCAN
 
-        elif state == State.COMPUTING_IK:
+                target_pose = hemisphere_waypoints[0]
+                target_rot = target_pose.rotation().matrix()
+                target_pos = target_pose.translation()
+
+                Q = kinematics_solver.IK_for_microscope(
+                    target_rot, target_pos, psi=elbow_angle
+                )
+
+                # Step 2) Find IK closest to current joint values
+                station_context = station.GetMyContextFromRoot(simulator.get_context())
+                q_curr = station.GetOutputPort("iiwa.position_measured").Eval(
+                    station_context
+                )
+                q_des = kinematics_solver.find_closest_solution(Q, q_curr)
+
+                print(colored(f"Goal joint configuration for Start: {q_des}", "yellow"))
+
+                trajectory = create_traj_from_q1_to_q2(
+                    station,
+                    q_current,
+                    q_des,
+                )
+
+                state = State.MOVING_TO_START
+                trajectory_start_time = simulator.get_context().get_time()
+
+        elif state == State.COMPUTING_IKS:
             # Wait for IK computation to complete
-            if ik_result["ready"]:
-                trajectory = ik_result["trajectory"]
+            if hemisphere_ik_result["ready"] and optical_axis_ik_result["ready"]:
+                hemisphere_trajectory = hemisphere_ik_result["trajectory"]
+                optical_axis_trajectory = optical_axis_ik_result["trajectory"]
                 trajectory_start_time = simulator.get_context().get_time()
                 print(
                     f"Simulator time when starting trajectory: {trajectory_start_time}"
                 )
-                print(colored("Starting trajectory execution!", "cyan"))
+                print(colored("Starting trajectory execution", "yellow"))
                 scan_idx += 1
 
-                state = State.MOVING
+                state = State.MOVING_ALONG_HEMISPHERE
 
-        elif state == State.MOVING:
+        elif state == State.MOVING_TO_START:
             current_time = simulator.get_context().get_time()
             traj_time = current_time - trajectory_start_time
 
@@ -930,7 +1010,77 @@ def main(use_hardware: bool) -> None:
                 )
             else:
                 print(colored("✓ Trajectory execution complete!", "green"))
+                if scan_idx >= len(hemisphere_waypoints):
+                    print(colored("✓ All scans complete!", "green"))
+                    state = State.DONE
+                else:
+                    state = State.WAITING_FOR_NEXT_SCAN
+
+        elif state == State.MOVING_ALONG_HEMISPHERE:
+            current_time = simulator.get_context().get_time()
+            traj_time = current_time - trajectory_start_time
+
+            if traj_time <= hemisphere_trajectory.end_time():
+                q_desired = hemisphere_trajectory.value(traj_time)
+                station_context = station.GetMyMutableContextFromRoot(
+                    simulator.get_mutable_context()
+                )
+                station.GetInputPort("iiwa.position").FixValue(
+                    station_context, q_desired
+                )
+            elif traj_time <= hemisphere_trajectory.end_time() + 1:  # Wait for 1 second
+                pass
+            else:
+                print(colored("✓ Hemisphere trajectory execution complete!", "green"))
+                state = State.MOVING_DOWN_OPTICAL_AXIS
+                trajectory_start_time = simulator.get_context().get_time()
+
+        elif state == State.MOVING_DOWN_OPTICAL_AXIS:
+            current_time = simulator.get_context().get_time()
+            traj_time = current_time - trajectory_start_time
+
+            if traj_time <= optical_axis_trajectory.end_time():
+                q_desired = optical_axis_trajectory.value(traj_time)
+                station_context = station.GetMyMutableContextFromRoot(
+                    simulator.get_mutable_context()
+                )
+                station.GetInputPort("iiwa.position").FixValue(
+                    station_context, q_desired
+                )
+            else:
+                print(colored("✓ Optical axis trajectory execution complete!", "green"))
                 state = State.WAITING_FOR_NEXT_SCAN
+
+        elif state == State.DONE:
+            context = simulator.get_context()
+            log = state_logger.FindLog(context)
+            t = log.sample_times()
+            data = log.data()  # shape: (num_states, num_samples)
+
+            # stack time as first column
+            out = np.vstack((t, data)).T
+
+            joint_log_csv_path = (
+                Path(__file__).parent.parent / "outputs" / "joint_log.csv"
+            )
+            np.savetxt(
+                joint_log_csv_path,
+                out,
+                delimiter=",",
+                header="time," + ",".join([f"x{i}" for i in range(data.shape[0])]),
+                comments="",
+            )
+
+            # Also save as pickle
+            log_data = {"sample_times": log.sample_times(), "data": log.data()}
+            import pickle
+
+            joint_log_pkl_path = (
+                Path(__file__).parent.parent / "outputs" / "joint_log.pkl"
+            )
+            with open(joint_log_pkl_path, "wb") as f:
+                pickle.dump(log_data, f)
+            break
 
         # Update button counts
         num_move_to_top_clicks = station.internal_meshcat.GetButtonClicks(
