@@ -73,6 +73,25 @@
       </inertial>
     </link>
 
+    <!-- Link representing camera -->
+    <link name="camera_link">
+      <pose>-0.0674 0.0428 -0.0946 3.14159 0 1.570796</pose>
+
+      <inertial>
+        <mass>0.01</mass>
+        <inertia>
+          <ixx>1e-6</ixx>
+          <iyy>1e-6</iyy>
+          <izz>1e-6</izz>
+        </inertia>
+      </inertial>
+    </link>
+
+    <joint name="camera_joint" type="fixed">
+      <parent>microscope_tip_link</parent>
+      <child>camera_link</child>
+    </joint>
+
     <joint name="fixed_tip" type="fixed">
       <parent>microscope_link</parent>
       <child>microscope_tip_link</child>

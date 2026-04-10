@@ -1,6 +1,14 @@
 import numpy as np
 
-from pydrake.all import Box, CoulombFriction, Rgba, RigidTransform, Sphere
+from pydrake.all import (
+    Box,
+    CoulombFriction,
+    Cylinder,
+    Rgba,
+    RigidTransform,
+    RotationMatrix,
+    Sphere,
+)
 
 
 def draw_sphere(meshcat, name, position, radius=0.01):
@@ -18,6 +26,27 @@ def draw_sphere(meshcat, name, position, radius=0.01):
 
 
 # TODO: These are collisions as well so maybe don't just add into visualizations.py?
+def draw_triad(meshcat, name, transform, length=0.1, radius=0.005, opacity=1.0):
+    """Draws a coordinate frame triad in Meshcat at the given RigidTransform."""
+    meshcat.SetObject(f"{name}/x", Cylinder(radius, length), Rgba(1, 0, 0, opacity))
+    meshcat.SetTransform(
+        f"{name}/x",
+        RigidTransform(RotationMatrix.MakeYRotation(np.pi / 2), [length / 2, 0, 0]),
+    )
+
+    meshcat.SetObject(f"{name}/y", Cylinder(radius, length), Rgba(0, 1, 0, opacity))
+    meshcat.SetTransform(
+        f"{name}/y",
+        RigidTransform(RotationMatrix.MakeXRotation(np.pi / 2), [0, length / 2, 0]),
+    )
+
+    meshcat.SetObject(f"{name}/z", Cylinder(radius, length), Rgba(0, 0, 1, opacity))
+    meshcat.SetTransform(f"{name}/z", RigidTransform([0, 0, length / 2]))
+
+    # Set the overall frame transform
+    meshcat.SetTransform(name, transform)
+
+
 def add_sphere(
     plant,
     position,
@@ -79,18 +108,25 @@ def add_floor(plant):
     )
 
 
-def add_wall(plant):
+def add_wall(plant, X_WF=None):
+    if not hasattr(add_wall, "counter"):
+        add_wall.counter = 0
+
+    add_wall.counter += 1
+
     friction = CoulombFriction(static_friction=0.9, dynamic_friction=0.8)
     wall_thickness = 0.01
     wall_height = 1.5
     wall_size = Box(wall_thickness, 3.0, wall_height)
-    X_WF = RigidTransform([-0.3 - wall_thickness / 2, 0, wall_height / 2])
+
+    if X_WF is None:
+        X_WF = RigidTransform([-0.3 - wall_thickness / 2, 0, wall_height / 2])
 
     plant.RegisterCollisionGeometry(
         plant.world_body(),
         X_WF,
         wall_size,
-        "wall_collision",
+        f"wall_{add_wall.counter}_collision",
         friction,
     )
 
@@ -99,6 +135,6 @@ def add_wall(plant):
         plant.world_body(),
         X_WF,
         wall_size,
-        "wall_visual",
+        f"wall_{add_wall.counter}_visual",
         [58 / 255.0, 85 / 255.0, 69 / 255.0, 0.3],
     )

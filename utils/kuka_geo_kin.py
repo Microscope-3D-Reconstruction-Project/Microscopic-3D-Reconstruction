@@ -36,11 +36,16 @@ class KinematicsSolver:
     Kinematics solver for KUKA LBR iiwa 14 R820 robot.
     """
 
-    def __init__(self, station):
+    def __init__(self, station, r, v):
         self.kin = self.get_kin()  # Get kinematic parameters of KUKA iiwa 14 R820 robot
         self.R_7M, self.p_7M_in_7 = self.get_microscope_offsets(
             station
         )  # Get the microscope mount offsets
+
+        # self.r, self.v = np.array([-1, 0, 0]), np.array([0, 1, 0])
+        # self.r, self.v = np.array([0, 0, -1]), np.array([0, 1, 0])
+        self.r = r
+        self.v = v
 
     def get_microscope_offsets(self, station):
         """
@@ -168,6 +173,7 @@ class KinematicsSolver:
         """
 
         if psi is None:
+            print("No psi angle provided, defaulting to 0 (fully extended elbow).")
             psi = 0  # Default psi angle if not provided
 
         # Adjust end-effector position to account for microscope mount offset
@@ -176,8 +182,8 @@ class KinematicsSolver:
         p_07 = p_0M - p_7M
 
         # Solve IK using standard kuka_IK method
-        r, v = np.array([-1, 0, 0]), np.array([0, 1, 0])
-        sew_stereo = SEWStereo(r, v)
+
+        sew_stereo = SEWStereo(self.r, self.v)
 
         # # Print what values we are solving for:
         # print("Solving IK for R_0M:\n", R_0M)
@@ -197,8 +203,7 @@ class KinematicsSolver:
         Qs = []
         elbow_angles = np.linspace(-np.pi, np.pi, num_elbow_angles)
 
-        r, v = np.array([1, 0, 0]), np.array([0, 1, 0])
-        sew_stereo = SEWStereo(r, v)
+        sew_stereo = SEWStereo(self.r, self.v)
         for i in range(num_elbow_angles):
             Q = self.kuka_IK(R_07, p_07, sew_stereo, elbow_angles[i])
             Qs.append(Q)
@@ -209,6 +214,7 @@ class KinematicsSolver:
     def find_closest_solution(self, Q, q, return_index=False):
         """
         Find the closest IK solution to the current joint configuration.
+        NOTE: Assumes joint limits are between -180 and 180. Don't need to do wrapping in this case.
 
         Args:
             Q (np.ndarray): An Nx7 array of N IK solutions.

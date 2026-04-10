@@ -21,4 +21,4 @@ directives:
     child: microscope_mount::microscope_link
     X_PC:
         translation: [0, 0, 0.007] # Set microscope tip location here
-        rotation: !Rpy { deg: [0, 180, 0] }  # Roll, Pitch, Yaw in degrees
+        rotation: !Rpy { deg: [0, 180, 180] }  # Roll, Pitch, Yaw in degrees
