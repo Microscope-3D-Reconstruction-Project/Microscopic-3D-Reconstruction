@@ -29,6 +29,9 @@ def run_focus_stack_on_subfolders(parent_folder):
             cmd = [
                 "focus-stack",
                 "--full-resolution-align",
+                "--global-align",
+                "--align-keep-size",
+                "--no-contrast",
                 f"--depthmap={depth_file}",
                 f"--output={output_file}",
             ] + image_files
