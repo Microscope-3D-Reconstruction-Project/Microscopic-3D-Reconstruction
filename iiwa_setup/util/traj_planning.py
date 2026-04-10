@@ -1,17 +1,14 @@
-import os
-
-from pathlib import Path
-
 import numpy as np
 
 from pydrake.all import (
     BsplineTrajectory,
+    GcsTrajectoryOptimization,
     KinematicTrajectoryOptimization,
     MinimumDistanceLowerBoundConstraint,
     PiecewisePolynomial,
-    Rgba,
     Solve,
 )
+from termcolor import colored
 
 from iiwa_setup.motion_planning.toppra import reparameterize_with_toppra
 
@@ -38,34 +35,7 @@ def compute_simple_traj_from_q1_to_q2(
     return traj
 
 
-def PlotPath(traj_points, station, internal_plant, internal_context):
-    """
-    Visualize the end-effector path in Meshcat
-    """
-
-    cps = traj_points.reshape((7, -1))
-    # Reconstruct the spline trajectory
-    traj = BsplineTrajectory(trajopt.basis(), cps)
-    s_samples = np.linspace(0, 1, 100)
-    ee_positions = []
-    for s in s_samples:
-        q = traj.value(s).flatten()
-        internal_plant.SetPositions(internal_context, q)
-        X_WB = internal_plant.EvalBodyPoseInWorld(
-            internal_context,
-            internal_plant.GetBodyByName("microscope_tip_link"),
-        )
-        ee_positions.append(X_WB.translation())
-    ee_positions = np.array(ee_positions).T  # shape (3, N)
-    station.internal_meshcat.SetLine(
-        "positions_path",
-        ee_positions,
-        line_width=0.05,
-        rgba=traj_plot_state["rgba"],
-    )
-
-
-def setup_trajectory_optimization_from_q1_to_q2(
+def setup_trajectory_optimization_from_q1_to_q2_without_collision_constraints(
     station,
     q1: np.ndarray,
     q2: np.ndarray,
@@ -75,20 +45,17 @@ def setup_trajectory_optimization_from_q1_to_q2(
     num_control_points: int = 10,
     duration_cost: float = 1.0,
     path_length_cost: float = 1.0,
-    visualize_solving: bool = False,
 ):
     optimization_plant = station.get_optimization_plant()
-    internal_plant = station.get_internal_plant()
-    internal_context = station.get_internal_plant_context()
     num_q = optimization_plant.num_positions()
-
-    # dictionary to make it mutable
-    traj_plot_state = {"rgba": Rgba(1, 0, 0, 1)}
 
     print("Planning initial trajectory from q1 to q2")
 
     trajopt = KinematicTrajectoryOptimization(num_q, num_control_points, spline_order=4)
     prog = trajopt.get_mutable_prog()
+
+    print("lower vel limits: ", optimization_plant.GetVelocityLowerLimits().flatten())
+    print("upper vel limits: ", optimization_plant.GetVelocityUpperLimits().flatten())
 
     # ============= Costs =============
     trajopt.AddDurationCost(duration_cost)
@@ -96,25 +63,13 @@ def setup_trajectory_optimization_from_q1_to_q2(
 
     # ============= Bounds =============
     trajopt.AddPositionBounds(
-        optimization_plant.GetPositionLowerLimits(),
-        optimization_plant.GetPositionUpperLimits(),
+        optimization_plant.GetPositionLowerLimits().flatten(),
+        optimization_plant.GetPositionUpperLimits().flatten(),
     )
     trajopt.AddVelocityBounds(
-        optimization_plant.GetVelocityLowerLimits(),
-        optimization_plant.GetVelocityUpperLimits(),
+        -vel_limits.flatten(),
+        vel_limits.flatten(),
     )
-    trajopt.AddVelocityBounds(
-        -vel_limits.reshape((num_q, 1)),
-        vel_limits.reshape((num_q, 1)),
-    )
-    # trajopt.AddAccelerationBounds(
-    #     -acc_limits.reshape((num_q, 1)),
-    #     acc_limits.reshape((num_q, 1)),
-    # )
-    # trajopt.AddVelocityBounds(
-    #     np.full((num_q, 1), -1.0),
-    #     np.full((num_q, 1), 1.0),
-    # )
 
     # ============= Constraints =============
     trajopt.AddDurationConstraint(duration_constraints[0], duration_constraints[1])
@@ -126,40 +81,7 @@ def setup_trajectory_optimization_from_q1_to_q2(
     prog.AddQuadraticErrorCost(np.eye(num_q), q1, trajopt.control_points()[:, 0])
     prog.AddQuadraticErrorCost(np.eye(num_q), q2, trajopt.control_points()[:, -1])
 
-    # Velocity (TOPPRA assumes zero start and end velocities)
-    trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 0)
-    trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 1)
-
-    if visualize_solving:
-
-        def PlotPath(control_points):
-            """
-            Visualize the end-effector path in Meshcat
-            """
-            cps = control_points.reshape((num_q, num_control_points))
-            # Reconstruct the spline trajectory
-            traj = BsplineTrajectory(trajopt.basis(), cps)
-            s_samples = np.linspace(0, 1, 100)
-            ee_positions = []
-            for s in s_samples:
-                q = traj.value(s).flatten()
-                internal_plant.SetPositions(internal_context, q)
-                X_WB = internal_plant.EvalBodyPoseInWorld(
-                    internal_context,
-                    internal_plant.GetBodyByName("microscope_tip_link"),
-                )
-                ee_positions.append(X_WB.translation())
-            ee_positions = np.array(ee_positions).T  # shape (3, N)
-            station.internal_meshcat.SetLine(
-                "positions_path",
-                ee_positions,
-                line_width=0.05,
-                rgba=traj_plot_state["rgba"],
-            )
-
-        prog.AddVisualizationCallback(PlotPath, trajopt.control_points().reshape((-1,)))
-
-    return trajopt, prog, traj_plot_state
+    return trajopt, prog
 
 
 def add_collision_constraints_to_trajectory(
@@ -171,7 +93,6 @@ def add_collision_constraints_to_trajectory(
     """
     Add collision avoidance constraints to the trajectory optimization.
     """
-
     optimization_plant = station.get_optimization_plant()
     optimization_plant_context = (
         station.internal_station.get_optimization_plant_context()
@@ -184,7 +105,7 @@ def add_collision_constraints_to_trajectory(
         None,
     )
 
-    evaluate_at_s = np.linspace(0, 1, num_samples)  # TODO: Use a diff value?
+    evaluate_at_s = np.linspace(0, 1, num_samples)
     for s in evaluate_at_s:
         trajopt.AddPathPositionConstraint(collision_constraint, s)
 
@@ -201,12 +122,36 @@ def resolve_with_toppra(
     # Use controller plant because we don't need to check for collisions here
     controller_plant = station.get_iiwa_controller_plant()
 
-    # Reparameterize with TOPPRA
     geometric_path = trajopt.ReconstructTrajectory(result)
 
-    # Diagnostic: Check trajectory properties before TOPPRA
     print("\n=== TOPPRA Diagnostic Info ===")
     print(f"Trajectory duration: {geometric_path.end_time():.4f}s")
+    print(f"Velocity limits: {vel_limits}")
+    print(f"Acceleration limits: {acc_limits}")
+
+    trajectory, toppra_success = reparameterize_with_toppra(
+        geometric_path,
+        controller_plant,
+        velocity_limits=vel_limits,
+        acceleration_limits=acc_limits,
+        num_grid_points=100,
+    )
+
+    return trajectory, toppra_success, geometric_path
+
+
+def resolve_gcs_with_toppra(
+    station,
+    raw_trajectory,
+    vel_limits: np.ndarray,
+    acc_limits: np.ndarray,
+):
+    controller_plant = station.get_iiwa_controller_plant()
+
+    geometric_path = GcsTrajectoryOptimization.NormalizeSegmentTimes(raw_trajectory)
+
+    print("\n=== TOPPRA Diagnostic Info ===")
+    print(f"Geometric path segment count: {geometric_path.end_time():.4f}")
     print(f"Velocity limits: {vel_limits}")
     print(f"Acceleration limits: {acc_limits}")
 
@@ -220,21 +165,145 @@ def resolve_with_toppra(
     return trajectory
 
 
-def create_traj_from_q1_to_q2(
+def setup_trajectory_optimization_from_q1_to_q2(
     station,
     q1: np.ndarray,
+    q_safe: np.ndarray,
     q2: np.ndarray,
-    vel_limits: np.ndarray = np.full(7, 1.0),
-    acc_limits: np.ndarray = np.full(7, 1.0),
-    duration_constraints: tuple[float, float] = (0.5, 5.0),
+    vel_limits: np.ndarray,
+    acc_limits: np.ndarray,  # Not used currently
+    duration_constraints: tuple[float, float],
     num_control_points: int = 10,
     duration_cost: float = 1.0,
     path_length_cost: float = 1.0,
-    visualize_solving: bool = True,
+    num_samples: int = 25,
+    minimum_distance: float = 0.001,
 ):
-    trajopt, prog, traj_plot_state = setup_trajectory_optimization_from_q1_to_q2(
+    optimization_plant = station.get_optimization_plant()
+    num_q = optimization_plant.num_positions()
+
+    print("Planning initial trajectory from q1 to q2")
+    print("q safe: ", q_safe)
+
+    trajopt = KinematicTrajectoryOptimization(num_q, num_control_points, spline_order=4)
+    prog = trajopt.get_mutable_prog()
+
+    # ============= Costs =============
+    # trajopt.AddDurationCost(duration_cost)
+    trajopt.AddPathLengthCost(0.01)
+
+    # ============= Bounds =============
+    trajopt.AddPositionBounds(
+        optimization_plant.GetPositionLowerLimits().flatten(),
+        optimization_plant.GetPositionUpperLimits().flatten(),
+    )
+    # trajopt.AddVelocityBounds(
+    #     -vel_limits.flatten(),
+    #     vel_limits.flatten(),
+    # )
+
+    # ============= Constraints =============
+    trajopt.AddDurationConstraint(duration_constraints[0], duration_constraints[1])
+
+    # Position
+    trajopt.AddPathPositionConstraint(q1, q1, 0.0)
+    trajopt.AddPathPositionConstraint(q2, q2, 1.0)
+    prog.AddQuadraticErrorCost(np.eye(num_q), q1, trajopt.control_points()[:, 0])
+    prog.AddQuadraticErrorCost(np.eye(num_q), q2, trajopt.control_points()[:, -1])
+
+    # ============= Initial guess =============
+    guess_qs = []
+    for i in range(num_control_points):
+        s = i / (num_control_points - 1)
+
+        if s <= 0.5:
+            phase_s = s / 0.5
+            guess_q = q1 + phase_s * (q_safe - q1)
+        else:
+            phase_s = (s - 0.5) / 0.5
+            guess_q = q_safe + phase_s * (q2 - q_safe)
+
+        prog.SetInitialGuess(trajopt.control_points()[:, i], guess_q)
+
+    # do same but w 100 points and append to guess_qs
+    for i in range(100):
+        s = i / 99
+
+        if s <= 0.5:
+            phase_s = s / 0.5
+            guess_q = q1 + phase_s * (q_safe - q1)
+        else:
+            phase_s = (s - 0.5) / 0.5
+            guess_q = q_safe + phase_s * (q2 - q_safe)
+
+        guess_qs.append(guess_q)
+
+    control_pts_guess = prog.GetInitialGuess(trajopt.control_points())
+    initial_spline = BsplineTrajectory(trajopt.basis(), control_pts_guess)
+
+    # Sanity check for collisions
+    optimization_plant_context = (
+        station.internal_station.get_optimization_plant_context()
+    )
+
+    max_vel = optimization_plant.GetVelocityUpperLimits().flatten()
+    if q_safe is not None:
+        dist = np.abs(q_safe - q1) + np.abs(q2 - q_safe)
+    else:
+        dist = np.abs(q2 - q1)
+
+    guess_duration = np.max(dist / max_vel) * 1.5
+    prog.SetInitialGuess(trajopt.duration(), guess_duration)
+
+    collision_constraint = MinimumDistanceLowerBoundConstraint(
+        optimization_plant,
+        minimum_distance,
+        optimization_plant_context,
+        None,
+    )
+
+    evaluate_at_s = np.linspace(0, 1, num_samples)
+    for s in evaluate_at_s:
+        trajopt.AddPathPositionConstraint(collision_constraint, s)
+
+    return trajopt, prog, guess_qs, initial_spline
+
+
+def solve_kinematic_traj_opt(
+    station,
+    q1: np.ndarray,
+    q2: np.ndarray,
+    vel_limits: np.ndarray = None,
+    acc_limits: np.ndarray = None,
+    duration_constraints: tuple[float, float] = (0.5, 10.0),
+    num_control_points: int = 10,
+    duration_cost: float = 1.0,
+    path_length_cost: float = 1.0,
+    q_safe: np.ndarray = None,
+    num_samples: int = 25,
+    minimum_distance: float = 0.001,
+):
+    """
+    Set up, solve, and reparameterize a kinematic trajectory from q1 to q2.
+
+    Returns:
+        trajectory: reparameterized trajectory (or None on failure)
+        success: bool
+    """
+    if vel_limits is None:
+        vel_limits = np.full(7, 1.0)
+    if acc_limits is None:
+        acc_limits = np.full(7, 1.0)
+
+    (
+        trajopt,
+        prog,
+        guess_qs,
+        initial_spline,
+    ) = setup_trajectory_optimization_from_q1_to_q2(
         station,
         q1,
+        q_safe,
         q2,
         vel_limits,
         acc_limits,
@@ -242,24 +311,122 @@ def create_traj_from_q1_to_q2(
         num_control_points,
         duration_cost,
         path_length_cost,
-        visualize_solving,
+        num_samples,
+        minimum_distance,
     )
-
-    # trajopt_with_collisions = add_collision_constraints_to_trajectory(station, trajopt)
 
     print("Solving trajectory optimization...")
     result = Solve(prog)
 
     if not result.is_success():
-        error_msg = f"Trajectory optimization failed! Solver status: {result.get_solver_id().name()}"
-        if result.get_solution_result():
-            error_msg += f" - {result.get_solution_result()}"
-        raise RuntimeError(error_msg)
+        print(
+            colored(
+                f"❌ Trajectory optimization failed! Solver: {result.get_solver_id().name()}",
+                "red",
+            )
+        )
 
-    print("Trajectory optimization succeeded!")
+        # Print infeasible constraint names for debugging
+        for name in result.GetInfeasibleConstraintNames(prog):
+            print(colored(f"  infeasible: {name}", "red"))
 
-    trajectory = resolve_with_toppra(station, trajopt, result, vel_limits, acc_limits)
+        return None, False, guess_qs, initial_spline, None
 
-    print(f"✓ TOPPRA succeeded! Trajectory duration: {trajectory.end_time():.2f}s")
+    print(colored("✓ Trajectory optimization succeeded!", "green"))
 
-    return trajectory
+    trajectory, toppra_success, solved_spline = resolve_with_toppra(
+        station, trajopt, result, vel_limits, acc_limits
+    )
+
+    if (not toppra_success) or trajectory is None:
+        print(colored("❌ TOPPRA failed to reparameterize the trajectory!", "red"))
+        return None, False, guess_qs, initial_spline, solved_spline
+    else:
+        print(
+            colored(
+                f"✓ TOPPRA succeeded! Duration: {trajectory.end_time():.2f}s", "green"
+            )
+        )
+
+    return trajectory, True, guess_qs, initial_spline, solved_spline
+
+
+def solve_kinematic_traj_opt_async(
+    station,
+    q1: np.ndarray,
+    q_safe: np.ndarray,
+    q2: np.ndarray,
+    vel_limits: np.ndarray,
+    acc_limits: np.ndarray,
+    result_dict: dict,
+    check_final_trajectory=False,  # We'll check for collisions separately after reparameterization
+    duration_constraints: tuple[float, float] = (0.5, 10.0),
+    num_control_points: int = 10,
+    duration_cost: float = 1.0,
+    path_length_cost: float = 1.0,
+    num_samples: int = 25,
+    minimum_distance: float = 0.001,
+):
+    """
+    Wrapper for solve_kinematic_traj_opt intended to be run in a background thread.
+    Populates result_dict with 'trajectory', 'success', and 'ready' keys.
+    """
+
+    print("Starting asynchronous trajectory optimization...")
+    print("Starting point (q1): ", q1)
+    print("Safe point (q_safe): ", q_safe)
+    print("Goal point (q2): ", q2)
+
+    (
+        trajectory,
+        success,
+        guess_qs,
+        initial_spline,
+        solved_spline,
+    ) = solve_kinematic_traj_opt(
+        station=station,
+        q1=q1,
+        q_safe=q_safe,
+        q2=q2,
+        vel_limits=vel_limits,
+        acc_limits=acc_limits,
+        duration_constraints=duration_constraints,
+        num_control_points=25,
+        duration_cost=duration_cost,
+        path_length_cost=path_length_cost,
+        num_samples=num_samples,
+        minimum_distance=minimum_distance,
+    )
+
+    # check if there's collisions going down the generated trajectory
+    if success and trajectory is not None and check_final_trajectory:
+        opt_plant = station.get_optimization_plant()
+        opt_plant_context = station.internal_station.get_optimization_plant_context()
+        opt_sg = station.internal_station.get_optimization_diagram_sg()
+        opt_sg_context = station.internal_station.get_optimization_diagram_sg_context()
+
+        t_start = trajectory.start_time()
+        t_end = trajectory.end_time()
+        check_times = np.linspace(t_start, t_end, num_samples)
+
+        collision_detected = False
+        for t in check_times:
+            q = trajectory.value(t).flatten()
+            opt_plant.SetPositions(opt_plant_context, q)
+            query_object = opt_sg.get_query_output_port().Eval(opt_sg_context)
+            if query_object.HasCollisions():
+                collision_detected = True
+                break
+
+        if collision_detected:
+            print(colored("❌ Collision detected in generated trajectory!", "red"))
+            success = False
+        else:
+            print(colored("✓ No collisions detected in trajectory.", "green"))
+
+    result_dict["trajectory"] = trajectory
+    result_dict["success"] = success
+    result_dict["guess_qs"] = guess_qs
+    result_dict["initial_spline"] = initial_spline
+    result_dict["solved_spline"] = solved_spline
+    result_dict["ready"] = True

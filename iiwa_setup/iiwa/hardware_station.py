@@ -40,6 +40,7 @@ from pydrake.all import (  # MeshcatVisualizer,
     Parser,
     ProcessModelDirectives,
     RigidTransform,
+    RobotDiagramBuilder,
     RotationMatrix,
     SceneGraph,
     StartMeshcat,
@@ -230,10 +231,16 @@ class InternalStationDiagram(Diagram):
         add_wall(self._plant)
 
         hemisphere_wall_rot = RotationMatrix.MakeZRotation(self.hemisphere_angle)
+        wall_pos = [self.hemisphere_pos[0], self.hemisphere_pos[1], 0.75]
         add_wall(
             self._plant,
+            wall_width=0.05,
             X_WF=RigidTransform(
-                hemisphere_wall_rot, self.hemisphere_pos + np.array([0.0, 0.005, 0.0])
+                hemisphere_wall_rot,
+                wall_pos
+                + np.array(
+                    [0.05, 0.005, 0.0]
+                ),  # TODO: Check 0.1 is protrusion of mount Advaith makes
             ),
         )
 
@@ -247,12 +254,12 @@ class InternalStationDiagram(Diagram):
         )
 
         # add sphere to visualize collisions
-        leeway = 0.02  # space to give microscope tip to avoid collision
+        obj_radius = 0.06  # space to give microscope tip to avoid collision
         add_sphere(
             self._plant,
             name="collision_sphere",
             position=self.hemisphere_pos,
-            radius=self.hemisphere_radius - leeway,
+            radius=obj_radius,
             color=[1.0, 1.0, 1.0, 1.0],
             collision=False,
         )
@@ -295,14 +302,19 @@ class InternalStationDiagram(Diagram):
 
         self._iiwa_controller_plant.Finalize()
 
-        temp_builder = DiagramBuilder()
+        # temp_builder = DiagramBuilder()
 
-        (
-            self._optimization_plant,
-            self._optimization_scene_graph,
-        ) = AddMultibodyPlantSceneGraph(
-            temp_builder, time_step=0.0  # Continuous time for optimization
-        )
+        # (
+        #     self._optimization_plant,
+        #     self._optimization_scene_graph,
+        # ) = AddMultibodyPlantSceneGraph(
+        #     temp_builder, time_step=0.0  # Continuous time for optimization
+        # )
+
+        opt_robot_builder = RobotDiagramBuilder(time_step=0.0)
+        self._optimization_plant = opt_robot_builder.plant()
+        self._optimization_scene_graph = opt_robot_builder.scene_graph()
+        temp_builder = opt_robot_builder.builder()  # Get the underlying DiagramBuilder
 
         # Load the same models as the internal plant
         opt_parser = Parser(self._optimization_plant)
@@ -320,6 +332,7 @@ class InternalStationDiagram(Diagram):
         add_wall(self._optimization_plant)
         add_wall(
             self._optimization_plant,
+            wall_width=0.1,
             X_WF=RigidTransform(
                 hemisphere_wall_rot, self.hemisphere_pos + np.array([0.0, 0.005, 0.0])
             ),
@@ -334,12 +347,12 @@ class InternalStationDiagram(Diagram):
             collision=False,
         )
 
-        leeway = 0.02  # space to give microscope tip to avoid collision
+        # leeway = 0.05  # space to give microscope tip to avoid collision
         add_sphere(  # collision sphere within scan_sphere
             self._optimization_plant,
             name="collision_sphere",
             position=self.hemisphere_pos,
-            radius=self.hemisphere_radius - leeway,
+            radius=obj_radius,
             collision=True,
         )
 
@@ -351,13 +364,13 @@ class InternalStationDiagram(Diagram):
 
         # ADD THIS: Add visualizer to the optimization diagram
         MeshcatVisualizer.AddToBuilder(
-            temp_builder,
-            self._optimization_scene_graph,
-            self._optimization_meshcat,
+            builder=temp_builder,
+            scene_graph=self._optimization_scene_graph,
+            meshcat=self._optimization_meshcat,
         )
 
         # Build the diagram (this creates a mini-diagram just for collision queries)
-        self._optimization_diagram = temp_builder.Build()
+        self._optimization_diagram = opt_robot_builder.Build()
 
         # Create contexts
         self._optimization_diagram_context = (

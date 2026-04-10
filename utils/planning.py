@@ -1,16 +1,37 @@
+import os
+import time
+
 import numpy as np
+
+from requests import options
+
+os.environ["MOSEKLM_LICENSE_FILE"] = "/home/rmineyev3/mosek/mosek.lic"
 
 # Drake
 from pydrake.all import (
+    BsplineTrajectory,
+    GcsTrajectoryOptimization,
+    GraphOfConvexSetsOptions,
+    HPolyhedron,
     KinematicTrajectoryOptimization,
+    LoadIrisRegionsYamlFile,
+    MinimumDistanceLowerBoundConstraint,
     PiecewisePolynomial,
+    Point,
+    Rgba,
     RigidTransform,
     RotationMatrix,
+    Solve,
+    Sphere,
 )
+from pydrake.solvers import MosekSolver, SnoptSolver
 from termcolor import colored
 
+from iiwa_setup.motion_planning.toppra import reparameterize_with_toppra
+from utils.iris import compute_iris_regions
 from utils.plotting import plot_hemisphere_trajectory, plot_optical_axis_trajectory
 from utils.safety import check_safety_constraints
+from utils.states import State
 
 
 def hemisphere_slerp(A, B, center, radius, speed_factor=1.0):
@@ -40,19 +61,20 @@ def hemisphere_slerp(A, B, center, radius, speed_factor=1.0):
     dot = np.clip(np.dot(a_hat, b_hat), -1.0, 1.0)
     theta = np.arccos(dot)
 
+    # Handle degenerate case: A and B are the same point (or nearly so)
+    if theta < 1e-6:
+        t_final = 0.5 / speed_factor
+        t = np.linspace(0, t_final, 3)
+        path = np.tile(A, (3, 1))
+        return path.T, t
+
     # Create time array for PiecewisePolynomial
-    # Make t depend on the length of the arc that we are traversing for more natural timing (longer paths take more time)
+    # Make t depend on the length of the arc for more natural timing
     arc_length = radius * theta
-    t_final = (
-        arc_length * 125 / speed_factor
-    )  # Scale by speed factor to make it faster or slower
-    num_points = int(t_final * 40)
+    t_final = arc_length * 125 / speed_factor
+    num_points = max(3, int(t_final * 40))
 
     t = np.linspace(0, t_final, num_points)
-
-    # if theta < 1e-6:  # points are extremely close
-    #     path = np.tile(A, (num_points, 1))
-    #     return path
 
     # Slerp interpolation
     t_vals = np.linspace(0, 1, num_points)
@@ -101,40 +123,6 @@ def sphere_frame(p, hemisphere_axis, center):
     if z_norm < 1e-9:
         raise ValueError("Point cannot equal sphere center.")
     z = z / z_norm
-
-    # # Global reference direction (choose something stable)
-    # if np.allclose(hemisphere_axis, np.array([1, 0, 0])):
-    #     g = np.array([-1.0, 0.0, 0.0])
-    #     if np.dot(z, g) > 0.99:
-    #         g = np.array([0.0, 0.0, -1.0])
-    #     elif np.dot(z, g) < -0.99:
-    #         g = np.array([0.0, 0.0, 1.0])
-    # elif np.allclose(hemisphere_axis, np.array([-1, 0, 0])):
-    #     g = np.array([0.0, 0.0, 1.0])
-    #     if np.dot(z, g) > 0.99:
-    #         g = np.array([0.0, 0.0, -1.0])
-    #     elif np.dot(z, g) < -0.99:
-    #         g = np.array([0.0, 0.0, 1.0])
-    # elif np.allclose(hemisphere_axis, np.array([0, 0, 1])):
-    #     g = np.array([1.0, 0.0, 0.0])
-    #     if np.dot(z, g) > 0.99:
-    #         g = np.array([0.0, 0.0, -1.0])
-    #     elif np.dot(z, g) < -0.99:
-    #         g = np.array([0.0, 0.0, 1.0])
-    # elif np.allclose(hemisphere_axis, np.array([0, 0, -1])):  # NOTE: Haven't checked
-    #     g = np.array([1.0, 0.0, 0.0])
-    #     if np.dot(z, g) > 0.99:
-    #         g = np.array([0.0, 0.0, 1.0])
-    #     elif np.dot(z, g) < -0.99:
-    #         g = np.array([0.0, 0.0, -1.0])
-    # elif np.allclose(hemisphere_axis, np.array([0, -1, 0])):
-    #     g = np.array([0.0, 0.0, 1.0])
-    #     if np.dot(z, g) > 0.99:
-    #         g = np.array([0.0, 0.0, -1.0])
-    #     elif np.dot(z, g) < -0.99:
-    #         g = np.array([0.0, 0.0, 1.0])
-    # else:
-    #     raise ValueError("Invalid hemisphere axis.")
 
     g = np.array([0.0, 0.0, 1.0])
     if np.dot(z, g) > 0.99:
@@ -560,178 +548,192 @@ def compute_simple_traj_from_q1_to_q2(
     return traj
 
 
-def PlotPath(traj_points, station, internal_plant, internal_context):
+def _draw_positions_as_spheres(meshcat, positions, name, rgba, radius=0.004):
     """
-    Visualize the end-effector path in Meshcat
+    Draw a list of 3D positions as spheres in meshcat.
+    Clears the parent path first so stale dots from a previous call are removed.
+    """
+    meshcat.Delete(name)
+    sphere = Sphere(radius)
+    for i, pos in enumerate(positions):
+        meshcat.SetObject(f"{name}/{i}", sphere, rgba)
+        meshcat.SetTransform(f"{name}/{i}", RigidTransform(pos))
+
+
+def plot_trajectory_in_meshcat(
+    station,
+    trajectory,
+    rgba=Rgba(0, 1, 0, 1),
+    name="gcs_path",
+    num_samples=100,
+    radius=0.004,
+):
+    """
+    Visualize a Drake Trajectory in Meshcat by sampling FK and drawing spheres.
+    """
+    internal_plant = station.get_internal_plant()
+    internal_context = station.get_internal_plant_context()
+
+    if trajectory is None:
+        print(f"Warning: Trajectory '{name}' is None, skipping visualization.")
+        return
+
+    try:
+        t_start = trajectory.start_time()
+        t_end = trajectory.end_time()
+    except Exception as e:
+        print(f"Warning: Could not get start/end time for trajectory '{name}': {e}")
+        return
+
+    if t_start >= t_end:
+        print(f"Warning: Trajectory '{name}' has zero or negative duration, skipping.")
+        return
+
+    positions = []
+    for t in np.linspace(t_start, t_end, num_samples):
+        q = trajectory.value(t).flatten()
+        internal_plant.SetPositions(internal_context, q)
+        X_WB = internal_plant.EvalBodyPoseInWorld(
+            internal_context, internal_plant.GetBodyByName("microscope_tip_link")
+        )
+        positions.append(X_WB.translation())
+
+    _draw_positions_as_spheres(station.internal_meshcat, positions, name, rgba, radius)
+
+
+def plot_configs_in_meshcat(
+    station,
+    configs,
+    rgba=Rgba(1, 0.5, 0.0, 1),
+    name="configs_path",
+    radius=0.004,
+):
+    """
+    Visualize a list of joint configurations as spheres in meshcat.
+    Useful for displaying an initial guess or any discrete set of configs.
     """
 
-    cps = traj_points.reshape((7, -1))
-    # Reconstruct the spline trajectory
-    traj = BsplineTrajectory(trajopt.basis(), cps)
-    s_samples = np.linspace(0, 1, 100)
+    internal_plant = station.get_internal_plant()
+    internal_context = station.get_internal_plant_context()
+
+    positions = []
+    for q in configs:
+        internal_plant.SetPositions(internal_context, q)
+        X_WB = internal_plant.EvalBodyPoseInWorld(
+            internal_context, internal_plant.GetBodyByName("microscope_tip_link")
+        )
+        positions.append(X_WB.translation())
+
+    _draw_positions_as_spheres(station.internal_meshcat, positions, name, rgba, radius)
+
+
+def PlotPath(
+    traj_points, station, internal_plant, internal_context, rgba=Rgba(1, 0, 0, 1)
+):
+    """
+    Visualize the end-effector path in Meshcat from a set of control points.
+    """
+    num_q = internal_plant.num_positions()
+    num_control_points = traj_points.size // num_q
+    cps = traj_points.reshape((num_q, num_control_points))
+
+    # Reconstruct a simple linear path for visualization of control points if needed,
+    # or follow the spline logic.
+    # For a general PlotPath, we'll assume we want to sample a line between them
+    # or just use the points directly if they represent samples.
+
     ee_positions = []
-    for s in s_samples:
-        q = traj.value(s).flatten()
+    for i in range(num_control_points):
+        q = cps[:, i]
         internal_plant.SetPositions(internal_context, q)
         X_WB = internal_plant.EvalBodyPoseInWorld(
             internal_context,
             internal_plant.GetBodyByName("microscope_tip_link"),
         )
         ee_positions.append(X_WB.translation())
+
     ee_positions = np.array(ee_positions).T  # shape (3, N)
     station.internal_meshcat.SetLine(
         "positions_path",
         ee_positions,
         line_width=0.05,
-        rgba=traj_plot_state["rgba"],
+        rgba=rgba,
     )
 
 
-def setup_trajectory_optimization_from_q1_to_q2(
-    station,
+def setup_gcs_traj_opt_from_q1_to_q2(
     q1: np.ndarray,
     q2: np.ndarray,
     vel_limits: np.ndarray,
-    acc_limits: np.ndarray,  # Not used currently
-    duration_constraints: tuple[float, float],
-    num_control_points: int = 10,
+    acc_limits: np.ndarray,
     duration_cost: float = 1.0,
     path_length_cost: float = 1.0,
-    visualize_solving: bool = False,
+    regions=None,
 ):
-    optimization_plant = station.get_optimization_plant()
-    internal_plant = station.get_internal_plant()
-    internal_context = station.get_internal_plant_context()
-    num_q = optimization_plant.num_positions()
+    gcs = GcsTrajectoryOptimization(len(q1))
 
-    # dictionary to make it mutable
-    traj_plot_state = {"rgba": Rgba(1, 0, 0, 1)}
+    start = gcs.AddRegions([Point(q1)], order=0)
+    goal = gcs.AddRegions([Point(q2)], order=0)
 
-    print("Planning initial trajectory from q1 to q2")
+    print(colored("Added start and goal to GCS...", "grey"))
 
-    trajopt = KinematicTrajectoryOptimization(num_q, num_control_points, spline_order=4)
-    prog = trajopt.get_mutable_prog()
-
-    # ============= Costs =============
-    trajopt.AddDurationCost(duration_cost)
-    trajopt.AddPathLengthCost(path_length_cost)
-
-    # ============= Bounds =============
-    trajopt.AddPositionBounds(
-        optimization_plant.GetPositionLowerLimits(),
-        optimization_plant.GetPositionUpperLimits(),
+    main = gcs.AddRegions(
+        regions=regions,
+        order=3,
+        h_min=0.1,  # NOTE: Default is 1e-6
+        h_max=20.0,
+        name="main",
     )
-    trajopt.AddVelocityBounds(
-        optimization_plant.GetVelocityLowerLimits(),
-        optimization_plant.GetVelocityUpperLimits(),
-    )
-    trajopt.AddVelocityBounds(
-        -vel_limits.reshape((num_q, 1)),
-        vel_limits.reshape((num_q, 1)),
-    )
-    # trajopt.AddAccelerationBounds(
-    #     -acc_limits.reshape((num_q, 1)),
-    #     acc_limits.reshape((num_q, 1)),
-    # )
-    # trajopt.AddVelocityBounds(
-    #     np.full((num_q, 1), -1.0),
-    #     np.full((num_q, 1), 1.0),
+
+    print(colored(f"Added {len(regions)} Iris regions to GCS...", "grey"))
+
+    gcs.AddEdges(start, main)
+    gcs.AddEdges(main, goal)
+
+    print(colored("Added edges to GCS...", "grey"))
+
+    main.AddTimeCost(duration_cost)
+    main.AddPathLengthCost(path_length_cost)
+
+    print(colored("Added costs to GCS...", "grey"))
+
+    # main.AddVelocityBounds(
+    #     optimization_plant.GetVelocityLowerLimits().flatten(),
+    #     optimization_plant.GetVelocityUpperLimits().flatten(),
     # )
 
-    # ============= Constraints =============
-    trajopt.AddDurationConstraint(duration_constraints[0], duration_constraints[1])
+    # print(colored("Added velocity bounds to GCS...", "grey"))
 
-    # Position
-    trajopt.AddPathPositionConstraint(q1, q1, 0.0)
-    trajopt.AddPathPositionConstraint(q2, q2, 1.0)
-    # Use quadratic consts to encourage q current and q goal
-    prog.AddQuadraticErrorCost(np.eye(num_q), q1, trajopt.control_points()[:, 0])
-    prog.AddQuadraticErrorCost(np.eye(num_q), q2, trajopt.control_points()[:, -1])
+    main.AddContinuityConstraints(
+        1
+    )  # C1 continuity for smoothness (position and velocity continuity)
+    main.AddContinuityConstraints(2)  # C2 continuity for smooth acceleration profiles
 
-    # Velocity (TOPPRA assumes zero start and end velocities)
-    trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 0)
-    trajopt.AddPathVelocityConstraint(np.zeros((num_q, 1)), np.zeros((num_q, 1)), 1)
+    print(colored("Added continuity constraints to GCS...", "grey"))
 
-    if visualize_solving:
-
-        def PlotPath(control_points):
-            """
-            Visualize the end-effector path in Meshcat
-            """
-            cps = control_points.reshape((num_q, num_control_points))
-            # Reconstruct the spline trajectory
-            traj = BsplineTrajectory(trajopt.basis(), cps)
-            s_samples = np.linspace(0, 1, 100)
-            ee_positions = []
-            for s in s_samples:
-                q = traj.value(s).flatten()
-                internal_plant.SetPositions(internal_context, q)
-                X_WB = internal_plant.EvalBodyPoseInWorld(
-                    internal_context,
-                    internal_plant.GetBodyByName("microscope_tip_link"),
-                )
-                ee_positions.append(X_WB.translation())
-            ee_positions = np.array(ee_positions).T  # shape (3, N)
-            station.internal_meshcat.SetLine(
-                "positions_path",
-                ee_positions,
-                line_width=0.05,
-                rgba=traj_plot_state["rgba"],
-            )
-
-        prog.AddVisualizationCallback(PlotPath, trajopt.control_points().reshape((-1,)))
-
-    return trajopt, prog, traj_plot_state
+    return gcs, start, goal
 
 
-def add_collision_constraints_to_trajectory(
+def resolve_gcs_with_toppra(
     station,
-    trajopt: KinematicTrajectoryOptimization,
-    num_samples: int = 25,
-    minimum_distance: float = 0.001,
-):
-    """
-    Add collision avoidance constraints to the trajectory optimization.
-    """
-
-    optimization_plant = station.get_optimization_plant()
-    optimization_plant_context = (
-        station.internal_station.get_optimization_plant_context()
-    )
-
-    collision_constraint = MinimumDistanceLowerBoundConstraint(
-        optimization_plant,
-        minimum_distance,
-        optimization_plant_context,
-        None,
-    )
-
-    evaluate_at_s = np.linspace(0, 1, num_samples)  # TODO: Use a diff value?
-    for s in evaluate_at_s:
-        trajopt.AddPathPositionConstraint(collision_constraint, s)
-
-    return trajopt
-
-
-def resolve_with_toppra(
-    station,
-    trajopt: KinematicTrajectoryOptimization,
-    result,
+    raw_trajectory,  # Pass the trajectory returned from gcs.SolvePath()
     vel_limits: np.ndarray,
     acc_limits: np.ndarray,
 ):
     # Use controller plant because we don't need to check for collisions here
     controller_plant = station.get_iiwa_controller_plant()
 
-    # Reparameterize with TOPPRA
-    geometric_path = trajopt.ReconstructTrajectory(result)
+    # 1. Strip the GCS timings to create a purely geometric path r(s)
+    # The "time" variable now simply maps to the number of segments (1 unit per segment)
+    geometric_path = GcsTrajectoryOptimization.NormalizeSegmentTimes(raw_trajectory)
 
     # Diagnostic: Check trajectory properties before TOPPRA
     print("\n=== TOPPRA Diagnostic Info ===")
-    print(f"Trajectory duration: {geometric_path.end_time():.4f}s")
+    print(f"Geometric path segment count: {geometric_path.end_time():.4f}")
     print(f"Velocity limits: {vel_limits}")
     print(f"Acceleration limits: {acc_limits}")
 
+    # 2. Reparameterize with TOPPRA to apply physical timing
     trajectory = reparameterize_with_toppra(
         geometric_path,
         controller_plant,
@@ -742,46 +744,174 @@ def resolve_with_toppra(
     return trajectory
 
 
-def create_traj_from_q1_to_q2(
+def solve_gcs_traj_opt(
     station,
     q1: np.ndarray,
     q2: np.ndarray,
-    vel_limits: np.ndarray = np.full(7, 1.0),
-    acc_limits: np.ndarray = np.full(7, 1.0),
-    duration_constraints: tuple[float, float] = (0.5, 5.0),
-    num_control_points: int = 10,
-    duration_cost: float = 1.0,
-    path_length_cost: float = 1.0,
-    visualize_solving: bool = True,
+    vel_limits: np.ndarray,
+    acc_limits: np.ndarray,
+    compute_iris: bool = False,
 ):
-    trajopt, prog, traj_plot_state = setup_trajectory_optimization_from_q1_to_q2(
-        station,
-        q1,
-        q2,
-        vel_limits,
-        acc_limits,
-        duration_constraints,
-        num_control_points,
-        duration_cost,
-        path_length_cost,
-        visualize_solving,
+    """
+
+    Returns:
+        trajectory: PiecewisePolynomial
+        success: bool (True if optimization succeeded)
+    """
+
+    if compute_iris:
+        regions = list(compute_iris_regions(station).values())
+    else:
+        regions = list(LoadIrisRegionsYamlFile("iris_regions_85.yaml").values())
+
+    # Debugging
+    q1_valid = -1
+    q2_valid = -1
+    for i, region in enumerate(regions):
+        # print(f"Region {i}: contains q1={region.PointInSet(q1)}, contains q2={region.PointInSet(q2)}")
+        if region.PointInSet(q1):
+            q1_valid = i
+        if region.PointInSet(q2):
+            q2_valid = i
+
+    if (q1_valid == -1) or (q2_valid == -1):
+        print(
+            colored("❌ Warning: q1 or q2 is not contained in any IRIS region!", "red")
+        )
+    else:
+        print(
+            colored(
+                f"✓ q1 is contained in region {q1_valid} and q2 is contained in region {q2_valid}",
+                "green",
+            )
+        )
+
+    # 1) Setup GCS optimization problem
+    gcs, start, goal = setup_gcs_traj_opt_from_q1_to_q2(
+        q1=q1,
+        q2=q2,
+        vel_limits=vel_limits,
+        acc_limits=acc_limits,
+        duration_cost=1.0,
+        path_length_cost=1.0,
+        regions=regions,
     )
 
-    # trajopt_with_collisions = add_collision_constraints_to_trajectory(station, trajopt)
+    # 2) Solve optimization problem
+    options = GraphOfConvexSetsOptions()
+    options.max_rounded_paths = 5  # default is 5
+    options.solver = MosekSolver()
+    options.restriction_solver = SnoptSolver()
 
-    print("Solving trajectory optimization...")
-    result = Solve(prog)
+    # print time taken to solve
+    start_time = time.time()
+    trajectory, result = gcs.SolvePath(start, goal, options)
+    end_time = time.time()
+    print(f"GCS solve time: {end_time - start_time:.4f} seconds")
 
+    # Quit if invalid
     if not result.is_success():
-        error_msg = f"Trajectory optimization failed! Solver status: {result.get_solver_id().name()}"
-        if result.get_solution_result():
-            error_msg += f" - {result.get_solution_result()}"
-        raise RuntimeError(error_msg)
+        print(colored("❌ GCS shortest path failed!", "red"))
+        return None, False
 
-    print("Trajectory optimization succeeded!")
+    print(colored("✓ GCS trajectory optimization succeeded!", "green"))
 
-    trajectory = resolve_with_toppra(station, trajopt, result, vel_limits, acc_limits)
+    # 3) Reparameterize with TOPPRA
+    trajectory = resolve_gcs_with_toppra(station, trajectory, vel_limits, acc_limits)
 
-    print(f"✓ TOPPRA succeeded! Trajectory duration: {trajectory.end_time():.2f}s")
+    print(colored("✓ TOPPRA succeeded!", "green"))
+    return trajectory, True
 
-    return trajectory
+
+def solve_gcs_traj_opt_async(
+    station,
+    q1: np.ndarray,
+    q2: np.ndarray,
+    vel_limits: np.ndarray,
+    acc_limits: np.ndarray,
+    result_dict: dict,
+    compute_iris: bool = False,
+):
+    """
+    Wrapper for solve_gcs_traj_opt to be used in a background thread.
+    """
+    trajectory, success = solve_gcs_traj_opt(
+        station=station,
+        q1=q1,
+        q2=q2,
+        vel_limits=vel_limits,
+        acc_limits=acc_limits,
+        compute_iris=compute_iris,
+    )
+
+    result_dict["trajectory"] = trajectory
+    result_dict["success"] = success
+    result_dict["ready"] = True
+
+
+def move_along_trajectory(traj, start_time, simulator, station):
+    # current_time = simulator.get_context().get_time()
+    # traj_time = current_time - trajectory_start_time
+
+    # if traj_time <= initial_trajectory.end_time():
+    #     q_desired = initial_trajectory.value(traj_time)
+    #     station_context = station.GetMyMutableContextFromRoot(
+    #         simulator.get_mutable_context()
+    #     )
+    #     station.GetInputPort("iiwa.position").FixValue(
+    #         station_context, q_desired
+    #     )
+    # else:
+    #     print(colored("✓ Trajectory execution complete!", "green"))
+    #     if scan_idx >= len(hemisphere_waypoints):
+    #         print(colored("✓ All scans complete!", "green"))
+    #         state = State.DONE
+    #     else:
+    #         state = State.WAITING_FOR_NEXT_SCAN
+
+    current_time = simulator.get_context().get_time()
+    traj_time = current_time - start_time
+    traj_complete = traj_time > traj.end_time()
+
+    if not traj_complete:
+        q_desired = traj.value(traj_time)
+        station_context = station.GetMyMutableContextFromRoot(
+            simulator.get_mutable_context()
+        )
+        station.GetInputPort("iiwa.position").FixValue(station_context, q_desired)
+    else:
+        print(colored("✓ Trajectory execution complete!", "green"))
+
+    return traj_complete
+
+
+def wait_for_trajectory_plan(thread_dict, station):
+    """Wait for the background thread to finish computing the trajectory, then visualize it and update state."""
+
+    if thread_dict["ready"]:
+        if thread_dict["success"]:
+            prescan_trajectory = thread_dict["trajectory"]
+
+            plot_configs_in_meshcat(
+                station,
+                thread_dict["guess_qs"],
+                name="guess_traj",
+            )
+
+            plot_trajectory_in_meshcat(
+                station,
+                prescan_trajectory,
+                name="final_traj",
+            )
+
+            print(
+                colored(
+                    "✓ GCS planning for start move complete. Moving now...",
+                    "green",
+                )
+            )
+        else:
+            print(colored("❌ GCS planning failed!", "red"))
+            quit()
+
+    return thread_dict["ready"] and thread_dict["success"]
