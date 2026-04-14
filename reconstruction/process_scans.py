@@ -32,6 +32,9 @@ def read_poses_from_scans(dataset_path, is_camera_to_world=False, as_quaternion=
               or quaternion+translation dicts, depending on as_quaternion.
     """
     poses = {}
+    print(
+        f"Reading poses as {'quaternion' if as_quaternion else 'matrix'} ({'Camera-to-World' if is_camera_to_world else 'World-to-Camera'}) from scans in {dataset_path}..."
+    )
     for scan_dir in sorted(dataset_path.glob("scan*")):
         pose_file = scan_dir / "pose.npy"
         if pose_file.exists():
@@ -54,7 +57,6 @@ def read_poses_from_scans(dataset_path, is_camera_to_world=False, as_quaternion=
             else:
                 poses[image_name] = matrix
             fmt = "quaternion" if as_quaternion else "matrix"
-            print(f"Loaded pose for {image_name} as {fmt}")
     return poses
 
 
@@ -143,6 +145,7 @@ def main():
     image_dir = dataset_path / "images"
     colmap_dir = dataset_path / "colmap"
     colmap_dir.mkdir(parents=True, exist_ok=True)
+    masks_dir = dataset_path / "masks"
 
     # Shared database: feature extraction and matching write here once;
     # triangulate_points and incremental_mapping only read from it.
@@ -162,6 +165,7 @@ def main():
 
     reader_options = pycolmap.ImageReaderOptions()
     reader_options.camera_model = "OPENCV"
+    reader_options.mask_path = masks_dir
 
     pycolmap.extract_features(
         database_path=database_path,
