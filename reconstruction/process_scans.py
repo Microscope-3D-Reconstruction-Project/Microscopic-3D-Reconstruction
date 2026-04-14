@@ -70,7 +70,9 @@ def create_reference_reconstruction(db_path, output_dir, pose_dict):
                           read_poses_from_scans(as_quaternion=True).
     """
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True)
 
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -82,27 +84,12 @@ def create_reference_reconstruction(db_path, output_dir, pose_dict):
     db_images = cursor.fetchall()
     conn.close()
 
-    # Map COLMAP integer IDs to String Names
-    MODEL_ID_TO_NAME = {
-        0: "SIMPLE_PINHOLE",
-        1: "PINHOLE",
-        2: "SIMPLE_RADIAL",
-        3: "RADIAL",
-        4: "OPENCV",
-        5: "OPENCV_FISHEYE",
-        6: "FULL_OPENCV",
-        7: "FOV",
-        8: "SIMPLE_RADIAL_FISHEYE",
-        9: "RADIAL_FISHEYE",
-        10: "THIN_PRISM_FISHEYE",
-    }
-
     # Write cameras.txt
     with open(output_dir / "cameras.txt", "w") as f:
         f.write("# CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n")
         for cam_id, model_id, width, height, params_blob in db_cameras:
             params = np.frombuffer(params_blob, dtype=np.float64)
-            model_name = MODEL_ID_TO_NAME.get(model_id, "OPENCV")
+            model_name = pycolmap.CameraModelId(model_id).name
             params_str = " ".join([str(p) for p in params])
             f.write(f"{cam_id} {model_name} {width} {height} {params_str}\n")
 
@@ -136,23 +123,39 @@ def main():
             "'automatic': run standard incremental SfM (poses estimated from images)."
         ),
     )
+    parser.add_argument(
+        "--load_prior_poses",
+        action="store_true",
+        default=False,
+        help=(
+            "For automatic mode: load known robot poses and create a reference reconstruction "
+            "to use as a prior for incremental SfM. Output saved to 'with_prior_poses_model'. "
+            "If not set, output is saved to 'no_prior_poses_model'."
+        ),
+    )
     args = parser.parse_args()
+
+    pycolmap.set_random_seed(0)
 
     dataset_path = Path(
         "/home/codaero/Projects/Microscopic-3D-Reconstruction/microscope-data/scans/20260401_205638"
     )
     image_dir = dataset_path / "images"
-    workspace_dir = dataset_path / "colmap" / args.mode
-    if workspace_dir.exists():
-        shutil.rmtree(workspace_dir)
-    workspace_dir.mkdir(parents=True)
+    colmap_dir = dataset_path / "colmap"
+    colmap_dir.mkdir(parents=True, exist_ok=True)
 
-    database_path = workspace_dir / "database.db"
+    # Shared database: feature extraction and matching write here once;
+    # triangulate_points and incremental_mapping only read from it.
+    database_path = colmap_dir / "database.db"
+    if database_path.exists():
+        database_path.unlink()
+
+    workspace_dir = colmap_dir / args.mode
 
     print(f"Extracting features from {image_dir}...")
     sift_options = pycolmap.SiftExtractionOptions()
-    sift_options.estimate_affine_shape = False  # high quality preset
-    sift_options.max_num_features = 8192  # high quality preset
+    sift_options.estimate_affine_shape = True
+    sift_options.max_num_features = 8192
 
     extraction_options = pycolmap.FeatureExtractionOptions()
     extraction_options.sift = sift_options
@@ -180,19 +183,31 @@ def main():
     )
 
     if args.mode == "triangulate":
+        # triangulate only has 1 mode so we can safely delete the entire workspace
+        if workspace_dir.exists():
+            shutil.rmtree(workspace_dir)
+        workspace_dir.mkdir(parents=True)
+
         # Use known robot poses: lock cameras, triangulate points.
         poses = read_poses_from_scans(
             dataset_path, is_camera_to_world=True, as_quaternion=True
         )
 
         reference_model_path = workspace_dir / "reference_model"
+        if reference_model_path.exists():
+            shutil.rmtree(reference_model_path)
+        reference_model_path.mkdir()
+
+        print("Creating reference reconstruction...")
         create_reference_reconstruction(database_path, reference_model_path, poses)
 
         reference = pycolmap.Reconstruction()
         reference.read(str(reference_model_path))
 
         triangulated_model_path = workspace_dir / "triangulated_model"
-        triangulated_model_path.mkdir(exist_ok=True)
+        if triangulated_model_path.exists():
+            shutil.rmtree(triangulated_model_path)
+        triangulated_model_path.mkdir()
 
         print("Triangulating 3D points from known poses...")
         result = pycolmap.triangulate_points(
@@ -206,13 +221,19 @@ def main():
         print(result.summary())
 
     else:  # automatic
+        workspace_dir.mkdir(exist_ok=True)
+
         # Standard automatic reconstruction SfM — poses estimated from images.
-        sfm_path = workspace_dir / "sparse"
+        if args.load_prior_poses:
+            sfm_path = workspace_dir / "with_prior_poses_model"
+        else:
+            sfm_path = workspace_dir / "no_prior_poses_model"
         if sfm_path.exists():
             shutil.rmtree(sfm_path)
-        sfm_path.mkdir(exist_ok=True)
+        sfm_path.mkdir()
 
         mapping_options = pycolmap.IncrementalPipelineOptions()
+
         # ModifyForIndividualData
         mapping_options.min_focal_length_ratio = 0.1
         mapping_options.max_focal_length_ratio = 10.0
@@ -223,13 +244,34 @@ def main():
         mapping_options.ba_global_max_num_iterations = 75
         mapping_options.ba_use_gpu = True
 
-        print("Running automatic reconstruction (poses unknown)...")
-        recs = pycolmap.incremental_mapping(
-            database_path,
-            image_dir,
-            sfm_path,
-            options=mapping_options,
-        )
+        if args.load_prior_poses:
+            poses = read_poses_from_scans(
+                dataset_path, is_camera_to_world=True, as_quaternion=True
+            )
+            reference_model_path = workspace_dir / "reference_model"
+            if reference_model_path.exists():
+                shutil.rmtree(reference_model_path)
+            reference_model_path.mkdir()
+
+            print("Creating reference reconstruction...")
+            create_reference_reconstruction(database_path, reference_model_path, poses)
+
+            print("Running automatic reconstruction with prior poses...")
+            recs = pycolmap.incremental_mapping(
+                database_path,
+                image_dir,
+                sfm_path,
+                options=mapping_options,
+                input_path=reference_model_path,
+            )
+        else:
+            print("Running automatic reconstruction (poses unknown)...")
+            recs = pycolmap.incremental_mapping(
+                database_path,
+                image_dir,
+                sfm_path,
+                options=mapping_options,
+            )
         for idx, rec in recs.items():
             logging.info(f"#{idx} {rec.summary()}")
 
