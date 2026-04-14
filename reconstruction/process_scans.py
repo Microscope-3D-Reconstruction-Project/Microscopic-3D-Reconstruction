@@ -112,6 +112,25 @@ def create_reference_reconstruction(db_path, output_dir, pose_dict):
         pass
 
 
+def create_dummy_model(output_dir):
+    """
+    Creates an empty COLMAP text model (no cameras, images, or points).
+    Passing this as input_path to incremental_mapping forces COLMAP to write
+    the result directly into output_path instead of numbered subdirectories.
+    """
+    output_dir = Path(output_dir)
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True)
+
+    with open(output_dir / "cameras.txt", "w") as f:
+        f.write("# CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n")
+    with open(output_dir / "images.txt", "w") as f:
+        f.write("# IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n")
+    with open(output_dir / "points3D.txt", "w") as f:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Process microscope scans with COLMAP."
@@ -200,6 +219,8 @@ def main():
     else:
         print(f"Using existing database without re-extraction: {database_path}")
 
+    output_model_dir = None
+
     if args.mode == "triangulate":
         # triangulate only has 1 mode so we can safely delete the entire workspace
         if workspace_dir.exists():
@@ -237,6 +258,7 @@ def main():
             refine_intrinsics=True,
         )
         print(result.summary())
+        output_model_dir = triangulated_model_path
 
     else:  # automatic
         workspace_dir.mkdir(exist_ok=True)
@@ -283,15 +305,28 @@ def main():
                 input_path=reference_model_path,
             )
         else:
+            dummy_model_path = workspace_dir / "dummy_model"
+            create_dummy_model(dummy_model_path)
+
             print("Running automatic reconstruction (poses unknown)...")
             recs = pycolmap.incremental_mapping(
                 database_path,
                 image_dir,
                 sfm_path,
                 options=mapping_options,
+                input_path=dummy_model_path,
             )
         for idx, rec in recs.items():
             logging.info(f"#{idx} {rec.summary()}")
+
+        output_model_dir = sfm_path
+
+    # Convert the model to TXT and export
+    output_model = pycolmap.Reconstruction(output_model_dir)
+    print("Exporting final model to TXT format...")
+    output_model.write_text(output_model_dir)
+    print("Exporting model sparse pointcloud as PLY...")
+    output_model.export_PLY(output_model_dir / "sparse_pointcloud.ply")
 
 
 if __name__ == "__main__":
