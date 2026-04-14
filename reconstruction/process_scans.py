@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 import time
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -14,6 +15,29 @@ import pycolmap
 from pycolmap import logging
 from scipy.spatial.transform import Rotation as R
 from visualizers.feature_viewer import FeatureViewer
+
+
+@dataclass
+class ScanPaths:
+    dataset_path: Path
+    image_dir: Path
+    colmap_dir: Path
+    masks_dir: Path
+    database_path: Path
+    workspace_dir: Path
+
+
+def create_scan_paths(dataset_path, mode):
+    colmap_dir = dataset_path / "colmap"
+    colmap_dir.mkdir(parents=True, exist_ok=True)
+    return ScanPaths(
+        dataset_path=dataset_path,
+        image_dir=dataset_path / "images",
+        colmap_dir=colmap_dir,
+        masks_dir=dataset_path / "masks",
+        database_path=colmap_dir / "database.db",
+        workspace_dir=colmap_dir / mode,
+    )
 
 
 def read_poses_from_scans(dataset_path, is_camera_to_world=False, as_quaternion=False):
@@ -132,6 +156,163 @@ def create_dummy_model(output_dir):
         pass
 
 
+def run_feature_extraction_and_matching(paths, rebuild_database):
+    # Feature extraction/matching are rerun when rebuilding or if DB is missing.
+    if rebuild_database and paths.database_path.exists():
+        print(f"Deleting existing database: {paths.database_path}")
+        paths.database_path.unlink()
+
+    should_extract_and_match = rebuild_database or not paths.database_path.exists()
+    if not should_extract_and_match:
+        print(f"Using existing database without re-extraction: {paths.database_path}")
+        return
+
+    print(f"Extracting features from {paths.image_dir}...")
+    sift_options = pycolmap.SiftExtractionOptions()
+    sift_options.estimate_affine_shape = True
+    sift_options.max_num_features = 8192
+
+    extraction_options = pycolmap.FeatureExtractionOptions()
+    extraction_options.sift = sift_options
+
+    reader_options = pycolmap.ImageReaderOptions()
+    reader_options.camera_model = "OPENCV"
+    reader_options.mask_path = paths.masks_dir
+
+    extraction_start_time = time.time()
+    pycolmap.extract_features(
+        database_path=paths.database_path,
+        image_path=paths.image_dir,
+        camera_mode=pycolmap.CameraMode.SINGLE,
+        reader_options=reader_options,
+        extraction_options=extraction_options,
+        device="cuda",
+    )
+    extraction_end_time = time.time()
+    print(
+        f"Feature extraction took {extraction_end_time - extraction_start_time:.2f} seconds"
+    )
+
+    feature_matching_options = pycolmap.FeatureMatchingOptions()
+    feature_matching_options.use_gpu = True
+    feature_matching_options.guided_matching = True
+
+    matching_start_time = time.time()
+    pycolmap.match_exhaustive(
+        database_path=paths.database_path,
+        matching_options=feature_matching_options,
+        device="cuda",
+    )
+    matching_end_time = time.time()
+    print(
+        f"Feature matching took {matching_end_time - matching_start_time:.2f} seconds"
+    )
+
+
+def run_triangulation(paths):
+    # triangulate only has 1 mode so we can safely delete the entire workspace
+    if paths.workspace_dir.exists():
+        shutil.rmtree(paths.workspace_dir)
+    paths.workspace_dir.mkdir(parents=True)
+
+    # Use known robot poses: lock cameras, triangulate points.
+    poses = read_poses_from_scans(
+        paths.dataset_path, is_camera_to_world=True, as_quaternion=True
+    )
+
+    reference_model_path = paths.workspace_dir / "reference_model"
+    if reference_model_path.exists():
+        shutil.rmtree(reference_model_path)
+    reference_model_path.mkdir()
+
+    print("Creating reference reconstruction...")
+    create_reference_reconstruction(paths.database_path, reference_model_path, poses)
+
+    reference = pycolmap.Reconstruction()
+    reference.read(str(reference_model_path))
+
+    triangulated_model_path = paths.workspace_dir / "triangulated_model"
+    if triangulated_model_path.exists():
+        shutil.rmtree(triangulated_model_path)
+    triangulated_model_path.mkdir()
+
+    print("Triangulating 3D points from known poses...")
+    result = pycolmap.triangulate_points(
+        reconstruction=reference,
+        database_path=paths.database_path,
+        image_path=paths.image_dir,
+        output_path=triangulated_model_path,
+        clear_points=True,
+        refine_intrinsics=True,
+    )
+    print(result.summary())
+    return triangulated_model_path
+
+
+def run_automatic_reconstruction(load_prior_poses, paths):
+    paths.workspace_dir.mkdir(exist_ok=True)
+
+    # Standard automatic reconstruction SfM — poses estimated from images.
+    if load_prior_poses:
+        sfm_path = paths.workspace_dir / "with_prior_poses_model"
+    else:
+        sfm_path = paths.workspace_dir / "no_prior_poses_model"
+    if sfm_path.exists():
+        shutil.rmtree(sfm_path)
+    sfm_path.mkdir()
+
+    mapping_options = pycolmap.IncrementalPipelineOptions()
+
+    # ModifyForIndividualData
+    mapping_options.min_focal_length_ratio = 0.1
+    mapping_options.max_focal_length_ratio = 10.0
+    mapping_options.max_extra_param = float("inf")
+    # ModifyForHighQuality
+    mapping_options.ba_local_max_num_iterations = 30
+    mapping_options.ba_local_max_refinements = 3
+    mapping_options.ba_global_max_num_iterations = 75
+    mapping_options.ba_use_gpu = True
+
+    if load_prior_poses:
+        poses = read_poses_from_scans(
+            paths.dataset_path, is_camera_to_world=True, as_quaternion=True
+        )
+        reference_model_path = paths.workspace_dir / "reference_model"
+        if reference_model_path.exists():
+            shutil.rmtree(reference_model_path)
+        reference_model_path.mkdir()
+
+        print("Creating reference reconstruction...")
+        create_reference_reconstruction(
+            paths.database_path, reference_model_path, poses
+        )
+
+        print("Running automatic reconstruction with prior poses...")
+        recs = pycolmap.incremental_mapping(
+            paths.database_path,
+            paths.image_dir,
+            sfm_path,
+            options=mapping_options,
+            input_path=reference_model_path,
+        )
+    else:
+        dummy_model_path = paths.workspace_dir / "dummy_model"
+        create_dummy_model(dummy_model_path)
+
+        print("Running automatic reconstruction (poses unknown)...")
+        recs = pycolmap.incremental_mapping(
+            paths.database_path,
+            paths.image_dir,
+            sfm_path,
+            options=mapping_options,
+            input_path=dummy_model_path,
+        )
+    for idx, rec in recs.items():
+        logging.info(f"#{idx} {rec.summary()}")
+
+    return sfm_path
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Process microscope scans with COLMAP."
@@ -171,167 +352,15 @@ def main():
     dataset_path = Path(
         "/home/codaero/Projects/Microscopic-3D-Reconstruction/microscope-data/scans/20260401_205638"
     )
-    image_dir = dataset_path / "images"
-    colmap_dir = dataset_path / "colmap"
-    colmap_dir.mkdir(parents=True, exist_ok=True)
-    masks_dir = dataset_path / "masks"
+    paths = create_scan_paths(dataset_path, args.mode)
 
-    # Shared database used by both triangulation and incremental mapping.
-    # Feature extraction/matching are only rerun when rebuilding or missing DB.
-    database_path = colmap_dir / "database.db"
-    if args.rebuild_database and database_path.exists():
-        print(f"Deleting existing database: {database_path}")
-        database_path.unlink()
-
-    workspace_dir = colmap_dir / args.mode
-
-    should_extract_and_match = args.rebuild_database or not database_path.exists()
-    if should_extract_and_match:
-        print(f"Extracting features from {image_dir}...")
-        sift_options = pycolmap.SiftExtractionOptions()
-        sift_options.estimate_affine_shape = True
-        sift_options.max_num_features = 8192
-
-        extraction_options = pycolmap.FeatureExtractionOptions()
-        extraction_options.sift = sift_options
-
-        reader_options = pycolmap.ImageReaderOptions()
-        reader_options.camera_model = "OPENCV"
-        reader_options.mask_path = masks_dir
-
-        extraction_start_time = time.time()
-        pycolmap.extract_features(
-            database_path=database_path,
-            image_path=image_dir,
-            camera_mode=pycolmap.CameraMode.SINGLE,
-            reader_options=reader_options,
-            extraction_options=extraction_options,
-            device="cuda",
-        )
-        extraction_end_time = time.time()
-        print(
-            f"Feature extraction took {extraction_end_time - extraction_start_time:.2f} seconds"
-        )
-
-        feature_matching_options = pycolmap.FeatureMatchingOptions()
-        feature_matching_options.use_gpu = True
-        feature_matching_options.guided_matching = True
-
-        matching_start_time = time.time()
-        pycolmap.match_exhaustive(
-            database_path=database_path,
-            matching_options=feature_matching_options,
-            device="cuda",
-        )
-        matching_end_time = time.time()
-        print(
-            f"Feature matching took {matching_end_time - matching_start_time:.2f} seconds"
-        )
-    else:
-        print(f"Using existing database without re-extraction: {database_path}")
-
-    output_model_dir = None
+    run_feature_extraction_and_matching(paths, args.rebuild_database)
 
     reconstruction_start_time = time.time()
     if args.mode == "triangulate":
-        # triangulate only has 1 mode so we can safely delete the entire workspace
-        if workspace_dir.exists():
-            shutil.rmtree(workspace_dir)
-        workspace_dir.mkdir(parents=True)
-
-        # Use known robot poses: lock cameras, triangulate points.
-        poses = read_poses_from_scans(
-            dataset_path, is_camera_to_world=True, as_quaternion=True
-        )
-
-        reference_model_path = workspace_dir / "reference_model"
-        if reference_model_path.exists():
-            shutil.rmtree(reference_model_path)
-        reference_model_path.mkdir()
-
-        print("Creating reference reconstruction...")
-        create_reference_reconstruction(database_path, reference_model_path, poses)
-
-        reference = pycolmap.Reconstruction()
-        reference.read(str(reference_model_path))
-
-        triangulated_model_path = workspace_dir / "triangulated_model"
-        if triangulated_model_path.exists():
-            shutil.rmtree(triangulated_model_path)
-        triangulated_model_path.mkdir()
-
-        print("Triangulating 3D points from known poses...")
-        result = pycolmap.triangulate_points(
-            reconstruction=reference,
-            database_path=database_path,
-            image_path=image_dir,
-            output_path=triangulated_model_path,
-            clear_points=True,
-            refine_intrinsics=True,
-        )
-        print(result.summary())
-        output_model_dir = triangulated_model_path
-
-    else:  # automatic
-        workspace_dir.mkdir(exist_ok=True)
-
-        # Standard automatic reconstruction SfM — poses estimated from images.
-        if args.load_prior_poses:
-            sfm_path = workspace_dir / "with_prior_poses_model"
-        else:
-            sfm_path = workspace_dir / "no_prior_poses_model"
-        if sfm_path.exists():
-            shutil.rmtree(sfm_path)
-        sfm_path.mkdir()
-
-        mapping_options = pycolmap.IncrementalPipelineOptions()
-
-        # ModifyForIndividualData
-        mapping_options.min_focal_length_ratio = 0.1
-        mapping_options.max_focal_length_ratio = 10.0
-        mapping_options.max_extra_param = float("inf")
-        # ModifyForHighQuality
-        mapping_options.ba_local_max_num_iterations = 30
-        mapping_options.ba_local_max_refinements = 3
-        mapping_options.ba_global_max_num_iterations = 75
-        mapping_options.ba_use_gpu = True
-
-        if args.load_prior_poses:
-            poses = read_poses_from_scans(
-                dataset_path, is_camera_to_world=True, as_quaternion=True
-            )
-            reference_model_path = workspace_dir / "reference_model"
-            if reference_model_path.exists():
-                shutil.rmtree(reference_model_path)
-            reference_model_path.mkdir()
-
-            print("Creating reference reconstruction...")
-            create_reference_reconstruction(database_path, reference_model_path, poses)
-
-            print("Running automatic reconstruction with prior poses...")
-            recs = pycolmap.incremental_mapping(
-                database_path,
-                image_dir,
-                sfm_path,
-                options=mapping_options,
-                input_path=reference_model_path,
-            )
-        else:
-            dummy_model_path = workspace_dir / "dummy_model"
-            create_dummy_model(dummy_model_path)
-
-            print("Running automatic reconstruction (poses unknown)...")
-            recs = pycolmap.incremental_mapping(
-                database_path,
-                image_dir,
-                sfm_path,
-                options=mapping_options,
-                input_path=dummy_model_path,
-            )
-        for idx, rec in recs.items():
-            logging.info(f"#{idx} {rec.summary()}")
-
-        output_model_dir = sfm_path
+        output_model_dir = run_triangulation(paths)
+    else:
+        output_model_dir = run_automatic_reconstruction(args.load_prior_poses, paths)
     reconstruction_end_time = time.time()
 
     if args.mode == "automatic" and args.load_prior_poses:
