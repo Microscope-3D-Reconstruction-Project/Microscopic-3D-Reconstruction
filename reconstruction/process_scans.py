@@ -2,6 +2,7 @@ import argparse
 import os
 import shutil
 import sqlite3
+import time
 
 from pathlib import Path
 
@@ -198,6 +199,7 @@ def main():
         reader_options.camera_model = "OPENCV"
         reader_options.mask_path = masks_dir
 
+        extraction_start_time = time.time()
         pycolmap.extract_features(
             database_path=database_path,
             image_path=image_dir,
@@ -206,21 +208,31 @@ def main():
             extraction_options=extraction_options,
             device="cuda",
         )
+        extraction_end_time = time.time()
+        print(
+            f"Feature extraction took {extraction_end_time - extraction_start_time:.2f} seconds"
+        )
 
         feature_matching_options = pycolmap.FeatureMatchingOptions()
         feature_matching_options.use_gpu = True
         feature_matching_options.guided_matching = True
 
+        matching_start_time = time.time()
         pycolmap.match_exhaustive(
             database_path=database_path,
             matching_options=feature_matching_options,
             device="cuda",
+        )
+        matching_end_time = time.time()
+        print(
+            f"Feature matching took {matching_end_time - matching_start_time:.2f} seconds"
         )
     else:
         print(f"Using existing database without re-extraction: {database_path}")
 
     output_model_dir = None
 
+    reconstruction_start_time = time.time()
     if args.mode == "triangulate":
         # triangulate only has 1 mode so we can safely delete the entire workspace
         if workspace_dir.exists():
@@ -320,6 +332,16 @@ def main():
             logging.info(f"#{idx} {rec.summary()}")
 
         output_model_dir = sfm_path
+    reconstruction_end_time = time.time()
+
+    if args.mode == "automatic" and args.load_prior_poses:
+        print(
+            f"Total time for automatic mode with prior poses: {reconstruction_end_time - reconstruction_start_time:.2f} seconds"
+        )
+    else:
+        print(
+            f"Total time for {args.mode} mode: {reconstruction_end_time - reconstruction_start_time:.2f} seconds"
+        )
 
     # Convert the model to TXT and export
     output_model = pycolmap.Reconstruction(output_model_dir)
