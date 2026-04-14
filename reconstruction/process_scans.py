@@ -135,6 +135,15 @@ def main():
             "If not set, output is saved to 'no_prior_poses_model'."
         ),
     )
+    parser.add_argument(
+        "--rebuild_database",
+        action="store_true",
+        default=False,
+        help=(
+            "If set, delete existing database.db and rerun feature extraction/matching. "
+            "If not set, extraction/matching only runs when database.db is missing."
+        ),
+    )
     args = parser.parse_args()
 
     pycolmap.set_random_seed(0)
@@ -147,44 +156,49 @@ def main():
     colmap_dir.mkdir(parents=True, exist_ok=True)
     masks_dir = dataset_path / "masks"
 
-    # Shared database: feature extraction and matching write here once;
-    # triangulate_points and incremental_mapping only read from it.
+    # Shared database used by both triangulation and incremental mapping.
+    # Feature extraction/matching are only rerun when rebuilding or missing DB.
     database_path = colmap_dir / "database.db"
-    if database_path.exists():
+    if args.rebuild_database and database_path.exists():
+        print(f"Deleting existing database: {database_path}")
         database_path.unlink()
 
     workspace_dir = colmap_dir / args.mode
 
-    print(f"Extracting features from {image_dir}...")
-    sift_options = pycolmap.SiftExtractionOptions()
-    sift_options.estimate_affine_shape = True
-    sift_options.max_num_features = 8192
+    should_extract_and_match = args.rebuild_database or not database_path.exists()
+    if should_extract_and_match:
+        print(f"Extracting features from {image_dir}...")
+        sift_options = pycolmap.SiftExtractionOptions()
+        sift_options.estimate_affine_shape = True
+        sift_options.max_num_features = 8192
 
-    extraction_options = pycolmap.FeatureExtractionOptions()
-    extraction_options.sift = sift_options
+        extraction_options = pycolmap.FeatureExtractionOptions()
+        extraction_options.sift = sift_options
 
-    reader_options = pycolmap.ImageReaderOptions()
-    reader_options.camera_model = "OPENCV"
-    reader_options.mask_path = masks_dir
+        reader_options = pycolmap.ImageReaderOptions()
+        reader_options.camera_model = "OPENCV"
+        reader_options.mask_path = masks_dir
 
-    pycolmap.extract_features(
-        database_path=database_path,
-        image_path=image_dir,
-        camera_mode=pycolmap.CameraMode.SINGLE,
-        reader_options=reader_options,
-        extraction_options=extraction_options,
-        device="cuda",
-    )
+        pycolmap.extract_features(
+            database_path=database_path,
+            image_path=image_dir,
+            camera_mode=pycolmap.CameraMode.SINGLE,
+            reader_options=reader_options,
+            extraction_options=extraction_options,
+            device="cuda",
+        )
 
-    feature_matching_options = pycolmap.FeatureMatchingOptions()
-    feature_matching_options.use_gpu = True
-    feature_matching_options.guided_matching = True
+        feature_matching_options = pycolmap.FeatureMatchingOptions()
+        feature_matching_options.use_gpu = True
+        feature_matching_options.guided_matching = True
 
-    pycolmap.match_exhaustive(
-        database_path=database_path,
-        matching_options=feature_matching_options,
-        device="cuda",
-    )
+        pycolmap.match_exhaustive(
+            database_path=database_path,
+            matching_options=feature_matching_options,
+            device="cuda",
+        )
+    else:
+        print(f"Using existing database without re-extraction: {database_path}")
 
     if args.mode == "triangulate":
         # triangulate only has 1 mode so we can safely delete the entire workspace
