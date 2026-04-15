@@ -1,4 +1,3 @@
-import argparse
 import os
 import shutil
 import sqlite3
@@ -8,10 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
+import hydra
 import matplotlib.pyplot as plt
 import numpy as np
 import pycolmap
 
+from omegaconf import DictConfig
 from pycolmap import logging
 from scipy.spatial.transform import Rotation as R
 from visualizers.feature_viewer import FeatureViewer
@@ -27,16 +28,17 @@ class ScanPaths:
     workspace_dir: Path
 
 
-def create_scan_paths(dataset_path, mode):
-    colmap_dir = dataset_path / "colmap"
+def create_scan_paths(cfg: DictConfig) -> ScanPaths:
+    dataset_path = Path(cfg.paths.dataset)
+    colmap_dir = dataset_path / cfg.paths.colmap_subdir
     colmap_dir.mkdir(parents=True, exist_ok=True)
     return ScanPaths(
         dataset_path=dataset_path,
-        image_dir=dataset_path / "images",
+        image_dir=dataset_path / cfg.paths.images_subdir,
         colmap_dir=colmap_dir,
-        masks_dir=dataset_path / "masks",
-        database_path=colmap_dir / "database.db",
-        workspace_dir=colmap_dir / mode,
+        masks_dir=dataset_path / cfg.paths.masks_subdir,
+        database_path=colmap_dir / cfg.paths.database_filename,
+        workspace_dir=colmap_dir / cfg.mode,
     )
 
 
@@ -156,28 +158,28 @@ def create_dummy_model(output_dir):
         pass
 
 
-def run_feature_extraction_and_matching(paths, rebuild_database, random_seed):
+def run_feature_extraction_and_matching(paths: ScanPaths, cfg: DictConfig) -> None:
     # Feature extraction/matching are rerun when rebuilding or if DB is missing.
-    if rebuild_database and paths.database_path.exists():
+    if cfg.rebuild_database and paths.database_path.exists():
         print(f"Deleting existing database: {paths.database_path}")
         paths.database_path.unlink()
 
-    should_extract_and_match = rebuild_database or not paths.database_path.exists()
+    should_extract_and_match = cfg.rebuild_database or not paths.database_path.exists()
     if not should_extract_and_match:
         print(f"Using existing database without re-extraction: {paths.database_path}")
         return
 
     print(f"Extracting features from {paths.image_dir}...")
     sift_options = pycolmap.SiftExtractionOptions()
-    sift_options.estimate_affine_shape = True
-    sift_options.max_num_features = 8192
+    sift_options.estimate_affine_shape = cfg.extraction.estimate_affine_shape
+    sift_options.max_num_features = cfg.extraction.max_num_features
 
     extraction_options = pycolmap.FeatureExtractionOptions()
     extraction_options.sift = sift_options
-    extraction_options.num_threads = 1
+    extraction_options.num_threads = cfg.extraction.num_threads
 
     reader_options = pycolmap.ImageReaderOptions()
-    reader_options.camera_model = "OPENCV"
+    reader_options.camera_model = cfg.extraction.camera_model
     reader_options.mask_path = paths.masks_dir
 
     extraction_start_time = time.time()
@@ -187,7 +189,7 @@ def run_feature_extraction_and_matching(paths, rebuild_database, random_seed):
         camera_mode=pycolmap.CameraMode.SINGLE,
         reader_options=reader_options,
         extraction_options=extraction_options,
-        device="cuda",
+        device=cfg.extraction.device,
     )
     extraction_end_time = time.time()
     print(
@@ -195,19 +197,19 @@ def run_feature_extraction_and_matching(paths, rebuild_database, random_seed):
     )
 
     feature_matching_options = pycolmap.FeatureMatchingOptions()
-    feature_matching_options.use_gpu = True
-    feature_matching_options.num_threads = 1
-    feature_matching_options.guided_matching = True
+    feature_matching_options.use_gpu = cfg.matching.use_gpu
+    feature_matching_options.num_threads = cfg.matching.num_threads
+    feature_matching_options.guided_matching = cfg.matching.guided_matching
 
     verification_options = pycolmap.TwoViewGeometryOptions()
-    verification_options.ransac.random_seed = random_seed
+    verification_options.ransac.random_seed = cfg.random_seed
 
     matching_start_time = time.time()
     pycolmap.match_exhaustive(
         database_path=paths.database_path,
         matching_options=feature_matching_options,
         verification_options=verification_options,
-        device="cuda",
+        device="cuda" if cfg.matching.use_gpu else "cpu",
     )
     matching_end_time = time.time()
     print(
@@ -215,7 +217,7 @@ def run_feature_extraction_and_matching(paths, rebuild_database, random_seed):
     )
 
 
-def run_triangulation(paths, random_seed):
+def run_triangulation(paths: ScanPaths, cfg: DictConfig) -> Path:
     # triangulate only has 1 mode so we can safely delete the entire workspace
     if paths.workspace_dir.exists():
         shutil.rmtree(paths.workspace_dir)
@@ -244,7 +246,7 @@ def run_triangulation(paths, random_seed):
 
     print("Triangulating 3D points from known poses...")
     triangulation_options = pycolmap.IncrementalPipelineOptions()
-    triangulation_options.random_seed = random_seed
+    triangulation_options.random_seed = cfg.random_seed
     result = pycolmap.triangulate_points(
         reconstruction=reference,
         database_path=paths.database_path,
@@ -258,11 +260,11 @@ def run_triangulation(paths, random_seed):
     return triangulated_model_path
 
 
-def run_automatic_reconstruction(load_prior_poses, paths, random_seed):
+def run_automatic_reconstruction(paths: ScanPaths, cfg: DictConfig) -> Path:
     paths.workspace_dir.mkdir(exist_ok=True)
 
     # Standard automatic reconstruction SfM — poses estimated from images.
-    if load_prior_poses:
+    if cfg.load_prior_poses:
         sfm_path = paths.workspace_dir / "with_prior_poses_model"
     else:
         sfm_path = paths.workspace_dir / "no_prior_poses_model"
@@ -273,18 +275,22 @@ def run_automatic_reconstruction(load_prior_poses, paths, random_seed):
     mapping_options = pycolmap.IncrementalPipelineOptions()
 
     # ModifyForIndividualData
-    mapping_options.min_focal_length_ratio = 0.1
-    mapping_options.max_focal_length_ratio = 10.0
-    mapping_options.max_extra_param = float("inf")
-    mapping_options.random_seed = random_seed
+    mapping_options.min_focal_length_ratio = cfg.mapping.min_focal_length_ratio
+    mapping_options.max_focal_length_ratio = cfg.mapping.max_focal_length_ratio
+    mapping_options.max_extra_param = cfg.mapping.max_extra_param
+    mapping_options.random_seed = cfg.random_seed
     # ModifyForHighQuality
-    mapping_options.ba_local_max_num_iterations = 30
-    mapping_options.ba_local_max_refinements = 3
-    mapping_options.ba_global_max_num_iterations = 75
-    mapping_options.ba_use_gpu = True
-    mapping_options.num_threads = 1
+    mapping_options.ba_local_max_num_iterations = (
+        cfg.mapping.ba_local_max_num_iterations
+    )
+    mapping_options.ba_local_max_refinements = cfg.mapping.ba_local_max_refinements
+    mapping_options.ba_global_max_num_iterations = (
+        cfg.mapping.ba_global_max_num_iterations
+    )
+    mapping_options.ba_use_gpu = cfg.mapping.ba_use_gpu
+    mapping_options.num_threads = cfg.mapping.num_threads
 
-    if load_prior_poses:
+    if cfg.load_prior_poses:
         poses = read_poses_from_scans(
             paths.dataset_path, is_camera_to_world=True, as_quaternion=True
         )
@@ -324,76 +330,28 @@ def run_automatic_reconstruction(load_prior_poses, paths, random_seed):
     return sfm_path
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Process microscope scans with COLMAP."
-    )
-    parser.add_argument(
-        "--mode",
-        choices=["triangulate", "automatic"],
-        default="triangulate",
-        help=(
-            "'triangulate': use known robot poses to lock cameras and triangulate points. "
-            "'automatic': run standard incremental SfM (poses estimated from images)."
-        ),
-    )
-    parser.add_argument(
-        "--load_prior_poses",
-        action="store_true",
-        default=False,
-        help=(
-            "For automatic mode: load known robot poses and create a reference reconstruction "
-            "to use as a prior for incremental SfM. Output saved to 'with_prior_poses_model'. "
-            "If not set, output is saved to 'no_prior_poses_model'."
-        ),
-    )
-    parser.add_argument(
-        "--rebuild_database",
-        action="store_true",
-        default=False,
-        help=(
-            "If set, delete existing database.db and rerun feature extraction/matching. "
-            "If not set, extraction/matching only runs when database.db is missing."
-        ),
-    )
-    parser.add_argument(
-        "--random_seed",
-        type=int,
-        default=1,
-        help=(
-            "Random seed used across PyCOLMAP stages that expose seed options "
-            "(matching verification, triangulation, and incremental mapping)."
-        ),
-    )
-    args = parser.parse_args()
+@hydra.main(config_path="configs/colmap", config_name="default", version_base="1.3")
+def main(cfg: DictConfig) -> None:
+    pycolmap.set_random_seed(cfg.random_seed)
 
-    pycolmap.set_random_seed(args.random_seed)
+    paths = create_scan_paths(cfg)
 
-    dataset_path = Path(
-        "/home/codaero/Projects/Microscopic-3D-Reconstruction/microscope-data/scans/20260401_205638"
-    )
-    paths = create_scan_paths(dataset_path, args.mode)
-
-    run_feature_extraction_and_matching(paths, args.rebuild_database, args.random_seed)
+    run_feature_extraction_and_matching(paths, cfg)
 
     reconstruction_start_time = time.time()
-    if args.mode == "triangulate":
-        output_model_dir = run_triangulation(paths, args.random_seed)
+    if cfg.mode == "triangulate":
+        output_model_dir = run_triangulation(paths, cfg)
     else:
-        output_model_dir = run_automatic_reconstruction(
-            args.load_prior_poses,
-            paths,
-            args.random_seed,
-        )
+        output_model_dir = run_automatic_reconstruction(paths, cfg)
     reconstruction_end_time = time.time()
 
-    if args.mode == "automatic" and args.load_prior_poses:
+    if cfg.mode == "automatic" and cfg.load_prior_poses:
         print(
             f"Total time for automatic mode with prior poses: {reconstruction_end_time - reconstruction_start_time:.2f} seconds"
         )
     else:
         print(
-            f"Total time for {args.mode} mode: {reconstruction_end_time - reconstruction_start_time:.2f} seconds"
+            f"Total time for {cfg.mode} mode: {reconstruction_end_time - reconstruction_start_time:.2f} seconds"
         )
 
     # Convert the model to TXT and export

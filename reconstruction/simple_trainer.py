@@ -65,7 +65,7 @@ def main(local_rank: int, world_rank: int, world_size: int, cfg: Config) -> None
         time.sleep(1_000_000)
 
 
-@hydra.main(config_path="configs", config_name="config", version_base="1.3")
+@hydra.main(config_path="configs/gsplat", config_name="default", version_base="1.3")
 def train(cfg_raw: DictConfig) -> None:
     """Hydra entry point: parse config, validate deps, launch distributed run."""
     # Build the typed Config dataclass from the Hydra DictConfig
