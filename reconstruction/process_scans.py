@@ -25,6 +25,7 @@ class ScanPaths:
     feat_masks_path: Path  # input: masks directory
     feat_database_path: Path  # output: database.db
     # reconstruction
+    recon_dataset_dir: Path  # input: raw scans directory (for reading robot poses)
     recon_images_path: Path  # input: images directory
     recon_database_path: Path  # input: database.db
     model_dir: Path  # output: sparse model directory
@@ -32,20 +33,23 @@ class ScanPaths:
 
 
 def create_scan_paths(cfg: DictConfig) -> ScanPaths:
-    feat_out_dir = Path(cfg.feat_extract_match.output_paths.dir)
+    feat_out_dir = Path(cfg.feat_extract_match.output_paths.output_dir)
     feat_out_dir.mkdir(parents=True, exist_ok=True)
 
-    recon_out_dir = Path(cfg.reconstruction.output_paths.dir)
+    recon_out_dir = Path(cfg.reconstruction.output_paths.output_dir)
     recon_out_dir.mkdir(parents=True, exist_ok=True)
 
     return ScanPaths(
-        feat_images_path=Path(cfg.feat_extract_match.input_paths.images_path),
-        feat_masks_path=Path(cfg.feat_extract_match.input_paths.masks_path),
+        feat_images_path=Path(cfg.feat_extract_match.input_paths.focus_stack_dir)
+        / cfg.feat_extract_match.input_paths.images_subdir,
+        feat_masks_path=Path(cfg.feat_extract_match.input_paths.focus_stack_dir)
+        / cfg.feat_extract_match.input_paths.masks_subdir,
         feat_database_path=feat_out_dir
         / cfg.feat_extract_match.output_paths.database_filename,
-        recon_images_path=Path(cfg.reconstruction.input_paths.images_path),
-        recon_database_path=Path(cfg.reconstruction.input_paths.database_path),
-        model_dir=recon_out_dir / cfg.reconstruction.output_paths.model_name,
+        recon_dataset_dir=Path(cfg.reconstruction.input_paths.dataset_dir),
+        recon_images_path=Path(cfg.reconstruction.input_paths.images_dir),
+        recon_database_path=Path(cfg.reconstruction.input_paths.database_filepath),
+        model_dir=recon_out_dir / cfg.reconstruction.output_paths.model_dirname,
         recon_output_dir=recon_out_dir,
     )
 
@@ -231,7 +235,7 @@ def run_triangulation(paths: ScanPaths, cfg: DictConfig) -> Path:
 
     # Use known robot poses: lock cameras, triangulate points.
     poses = read_poses_from_scans(
-        paths.recon_images_path.parent, is_camera_to_world=True, as_quaternion=True
+        paths.recon_dataset_dir, is_camera_to_world=True, as_quaternion=True
     )
 
     reference_model_path = paths.recon_output_dir / "_reference_model"
@@ -296,7 +300,7 @@ def run_automatic_reconstruction(paths: ScanPaths, cfg: DictConfig) -> Path:
 
     if cfg.reconstruction.load_prior_poses:
         poses = read_poses_from_scans(
-            paths.recon_images_path.parent, is_camera_to_world=True, as_quaternion=True
+            paths.recon_dataset_dir, is_camera_to_world=True, as_quaternion=True
         )
         reference_model_path = paths.recon_output_dir / "_reference_model"
         if reference_model_path.exists():

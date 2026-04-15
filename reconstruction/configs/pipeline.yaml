@@ -1,4 +1,5 @@
 defaults:
+  - focus_stack: default
   - colmap: default
   - gsplat: default
   - _self_
@@ -7,16 +8,29 @@ defaults:
 output_dir: outputs
 experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 
+# ── Dataset ──────────────────────────────────────────────────────────────────
+dataset_dir: ???              # required: directory containing scan subdirs
+
 # ── Stage toggles ─────────────────────────────────────────────────────────────
 run:
+  focus_stack: true
   colmap_feat_extract_match: true
   colmap_reconstruct: true
   gsplat: true
+
+# ── Wire experiment dir into focus_stack ─────────────────────────────────────
+focus_stack:
+  dataset_dir: ${dataset_dir}
+  output_dir: ${output_dir}
+  experiment_name: ${experiment_name}
 
 # ── Wire experiment dir into colmap ───────────────────────────────────────────
 colmap:
   output_dir: ${output_dir}
   experiment_name: ${experiment_name}
+  reconstruction:
+    input_paths:
+      dataset_dir: ${dataset_dir}
   run:
     colmap_feat_extract_match: ${run.colmap_feat_extract_match}
     colmap_reconstruct: ${run.colmap_reconstruct}

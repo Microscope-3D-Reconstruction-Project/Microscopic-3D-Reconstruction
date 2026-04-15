@@ -1,0 +1,31 @@
+# ── Input ─────────────────────────────────────────────────────────────────────
+dataset_dir: ???              # required: directory containing scan subdirs
+
+# ── Subdirectory search ───────────────────────────────────────────────────────
+scan_prefix: scan             # only subdirs starting with this prefix are processed
+
+# ── Experiment ────────────────────────────────────────────────────────────────
+output_dir: outputs
+experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
+
+# ── Output paths ──────────────────────────────────────────────────────────────
+output_paths:
+  output_dir: ${output_dir}/${experiment_name}
+  images_subdir: images
+  masks_subdir: masks
+  depthmaps_subdir: depthmaps
+
+# ── focus-stack CLI params ────────────────────────────────────────────────────
+focus_stack_params:
+  full_resolution_align: true
+  global_align: true
+  align_keep_size: true
+  no_contrast: true
+
+# ── Hydra internal settings ───────────────────────────────────────────────────
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${output_dir}/${experiment_name}
+  output_subdir: .hydra
