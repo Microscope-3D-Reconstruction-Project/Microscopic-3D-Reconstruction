@@ -156,7 +156,7 @@ def create_dummy_model(output_dir):
         pass
 
 
-def run_feature_extraction_and_matching(paths, rebuild_database):
+def run_feature_extraction_and_matching(paths, rebuild_database, random_seed):
     # Feature extraction/matching are rerun when rebuilding or if DB is missing.
     if rebuild_database and paths.database_path.exists():
         print(f"Deleting existing database: {paths.database_path}")
@@ -174,6 +174,7 @@ def run_feature_extraction_and_matching(paths, rebuild_database):
 
     extraction_options = pycolmap.FeatureExtractionOptions()
     extraction_options.sift = sift_options
+    extraction_options.num_threads = 1
 
     reader_options = pycolmap.ImageReaderOptions()
     reader_options.camera_model = "OPENCV"
@@ -195,12 +196,17 @@ def run_feature_extraction_and_matching(paths, rebuild_database):
 
     feature_matching_options = pycolmap.FeatureMatchingOptions()
     feature_matching_options.use_gpu = True
+    feature_matching_options.num_threads = 1
     feature_matching_options.guided_matching = True
+
+    verification_options = pycolmap.TwoViewGeometryOptions()
+    verification_options.ransac.random_seed = random_seed
 
     matching_start_time = time.time()
     pycolmap.match_exhaustive(
         database_path=paths.database_path,
         matching_options=feature_matching_options,
+        verification_options=verification_options,
         device="cuda",
     )
     matching_end_time = time.time()
@@ -209,7 +215,7 @@ def run_feature_extraction_and_matching(paths, rebuild_database):
     )
 
 
-def run_triangulation(paths):
+def run_triangulation(paths, random_seed):
     # triangulate only has 1 mode so we can safely delete the entire workspace
     if paths.workspace_dir.exists():
         shutil.rmtree(paths.workspace_dir)
@@ -237,19 +243,22 @@ def run_triangulation(paths):
     triangulated_model_path.mkdir()
 
     print("Triangulating 3D points from known poses...")
+    triangulation_options = pycolmap.IncrementalPipelineOptions()
+    triangulation_options.random_seed = random_seed
     result = pycolmap.triangulate_points(
         reconstruction=reference,
         database_path=paths.database_path,
         image_path=paths.image_dir,
         output_path=triangulated_model_path,
         clear_points=True,
+        options=triangulation_options,
         refine_intrinsics=True,
     )
     print(result.summary())
     return triangulated_model_path
 
 
-def run_automatic_reconstruction(load_prior_poses, paths):
+def run_automatic_reconstruction(load_prior_poses, paths, random_seed):
     paths.workspace_dir.mkdir(exist_ok=True)
 
     # Standard automatic reconstruction SfM — poses estimated from images.
@@ -267,11 +276,13 @@ def run_automatic_reconstruction(load_prior_poses, paths):
     mapping_options.min_focal_length_ratio = 0.1
     mapping_options.max_focal_length_ratio = 10.0
     mapping_options.max_extra_param = float("inf")
+    mapping_options.random_seed = random_seed
     # ModifyForHighQuality
     mapping_options.ba_local_max_num_iterations = 30
     mapping_options.ba_local_max_refinements = 3
     mapping_options.ba_global_max_num_iterations = 75
     mapping_options.ba_use_gpu = True
+    mapping_options.num_threads = 1
 
     if load_prior_poses:
         poses = read_poses_from_scans(
@@ -345,22 +356,35 @@ def main():
             "If not set, extraction/matching only runs when database.db is missing."
         ),
     )
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=1,
+        help=(
+            "Random seed used across PyCOLMAP stages that expose seed options "
+            "(matching verification, triangulation, and incremental mapping)."
+        ),
+    )
     args = parser.parse_args()
 
-    pycolmap.set_random_seed(0)
+    pycolmap.set_random_seed(args.random_seed)
 
     dataset_path = Path(
         "/home/codaero/Projects/Microscopic-3D-Reconstruction/microscope-data/scans/20260401_205638"
     )
     paths = create_scan_paths(dataset_path, args.mode)
 
-    run_feature_extraction_and_matching(paths, args.rebuild_database)
+    run_feature_extraction_and_matching(paths, args.rebuild_database, args.random_seed)
 
     reconstruction_start_time = time.time()
     if args.mode == "triangulate":
-        output_model_dir = run_triangulation(paths)
+        output_model_dir = run_triangulation(paths, args.random_seed)
     else:
-        output_model_dir = run_automatic_reconstruction(args.load_prior_poses, paths)
+        output_model_dir = run_automatic_reconstruction(
+            args.load_prior_poses,
+            paths,
+            args.random_seed,
+        )
     reconstruction_end_time = time.time()
 
     if args.mode == "automatic" and args.load_prior_poses:
