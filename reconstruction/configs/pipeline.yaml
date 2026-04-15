@@ -1,0 +1,35 @@
+defaults:
+  - colmap: default
+  - gsplat: default
+  - _self_
+
+# ── Experiment ────────────────────────────────────────────────────────────────
+output_dir: outputs
+experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
+
+# ── Stage toggles ─────────────────────────────────────────────────────────────
+run:
+  colmap_feat_extract_match: true
+  colmap_reconstruct: true
+  gsplat: true
+
+# ── Wire experiment dir into colmap ───────────────────────────────────────────
+colmap:
+  output_dir: ${output_dir}
+  experiment_name: ${experiment_name}
+  run:
+    colmap_feat_extract_match: ${run.colmap_feat_extract_match}
+    colmap_reconstruct: ${run.colmap_reconstruct}
+
+# ── Wire colmap sparse output → gsplat input ─────────────────────────────────
+gsplat:
+  data_dir: ${output_dir}/${experiment_name}/sparse_model
+  result_dir: ${output_dir}/${experiment_name}/gsplat
+
+# ── Hydra internal settings ───────────────────────────────────────────────────
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${output_dir}/${experiment_name}
+  output_subdir: .hydra
