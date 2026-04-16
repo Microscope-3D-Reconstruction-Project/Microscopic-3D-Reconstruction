@@ -248,18 +248,26 @@ class InternalStationDiagram(Diagram):
             name="scan_sphere",
             position=self.hemisphere_pos,
             radius=self.hemisphere_radius,
-            color=[0.0, 1.0, 0.0, 0.2],
+            color=[1.0, 1.0, 0.0, 0.1],
             collision=False,
         )
 
         # add sphere to visualize collisions
-        # obj_radius = 0.01  # space to give microscope tip to avoid collision
-        add_sphere(
+        add_sphere(  # Not visualized for now
             self._plant,
             name="collision_sphere",
             position=self.hemisphere_pos,
             radius=self.hemisphere_radius - 0.01,
-            color=[1.0, 1.0, 1.0, 1.0],
+            color=[0, 0, 0, 0.0],
+            collision=False,
+        )
+
+        add_sphere(
+            self._plant,
+            name="initial_center",
+            position=self.hemisphere_pos,
+            radius=0.005,
+            color=[0, 0, 0, 1.0],
             collision=False,
         )
 
