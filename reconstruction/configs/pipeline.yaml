@@ -28,9 +28,6 @@ focus_stack:
 colmap:
   output_dir: ${output_dir}
   experiment_name: ${experiment_name}
-  reconstruction:
-    input_paths:
-      dataset_dir: ${dataset_dir}
   run:
     colmap_feat_extract_match: ${run.colmap_feat_extract_match}
     colmap_reconstruct: ${run.colmap_reconstruct}

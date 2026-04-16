@@ -1,0 +1,22 @@
+defaults:
+  - default
+  - _self_
+
+# ── Strategy ───────────────────────────────────────────────────────────────────
+# MCMCStrategy — Markov Chain Monte Carlo densification.
+# This block fully replaces the strategy from default.yaml.
+strategy:
+  _target_: gsplat.strategy.MCMCStrategy
+  verbose: true
+  cap_max: 1000000
+  noise_lr: 500000.0
+  min_opacity: 0.005
+  refine_start_iter: 500
+  refine_stop_iter: 25000
+  refine_every: 100
+
+# ── MCMC-specific training hyperparameters ─────────────────────────────────────
+init_opa: 0.5
+init_scale: 0.1
+opacity_reg: 0.01
+scale_reg: 0.01

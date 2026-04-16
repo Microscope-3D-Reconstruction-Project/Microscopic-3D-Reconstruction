@@ -1,10 +1,62 @@
 import glob
+import json
 import os
+import re
 import subprocess
 
 import hydra
+import numpy as np
 
 from omegaconf import DictConfig
+
+
+def _load_pose_for_scan(
+    subdir_path: str, image_files: list, ref_idx: int
+) -> np.ndarray:
+    """Load the pose matrix for a scan directory.
+
+    Checks in order:
+    1. pose_NNNNN.npy files whose numeric suffixes match frame_NNNNN.jpg files
+       (same count and same numbers) → loads the pose whose number matches the
+       reference frame at ref_idx.
+    2. A singular pose.npy file → loads it directly.
+    3. Neither → raises FileNotFoundError.
+    """
+    # Collect numeric suffixes from input frame files.
+    frame_numbers = []
+    for f in image_files:
+        m = re.search(r"frame_(\d+)\.jpg$", os.path.basename(f))
+        if m:
+            frame_numbers.append(m.group(1))
+
+    # Collect indexed pose_*.npy files.
+    pose_indexed = sorted(glob.glob(os.path.join(subdir_path, "pose_*.npy")))
+    pose_numbers = []
+    for p in pose_indexed:
+        m = re.search(r"pose_(\d+)\.npy$", os.path.basename(p))
+        if m:
+            pose_numbers.append(m.group(1))
+
+    # Case 1: indexed pose files with matching numbers and count as frames.
+    if (
+        pose_indexed
+        and len(pose_numbers) == len(frame_numbers)
+        and set(pose_numbers) == set(frame_numbers)
+    ):
+        ref_number = frame_numbers[ref_idx]
+        pose_file = os.path.join(subdir_path, f"pose_{ref_number}.npy")
+        return np.load(pose_file)
+
+    # Case 2: singular pose.npy.
+    singular = os.path.join(subdir_path, "pose.npy")
+    if os.path.exists(singular):
+        return np.load(singular)
+
+    raise FileNotFoundError(
+        f"No pose .npy files found in {subdir_path}. "
+        "Expected either pose_NNNNN.npy files matching frame images, "
+        "or a single pose.npy."
+    )
 
 
 def run_focus_stack(cfg: DictConfig) -> None:
@@ -34,12 +86,18 @@ def run_focus_stack(cfg: DictConfig) -> None:
     if p.no_contrast:
         flags.append("--no-contrast")
 
+    poses = {}
+
     for subdir in scan_dirs:
         subdir_path = os.path.join(dataset_dir, subdir)
         image_files = sorted(glob.glob(os.path.join(subdir_path, "*.jpg")))
         if not image_files:
             print(f"No .jpg files found in {subdir_path}, skipping.")
             continue
+
+        ref_idx = (
+            len(image_files) // 2
+        )  # picks the middle one TODO: take a look at this later
         output_file = os.path.join(out_image_dir, f"{subdir}.jpg")
         depth_file = os.path.join(out_depth_dir, f"{subdir}.png")
         mask_file = os.path.join(out_mask_dir, f"{subdir}.png")
@@ -47,6 +105,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
             ["focus-stack"]
             + flags
             + [
+                f"--reference={ref_idx}",
                 f"--validmask={mask_file}",
                 f"--depthmap={depth_file}",
                 f"--output={output_file}",
@@ -55,6 +114,14 @@ def run_focus_stack(cfg: DictConfig) -> None:
         )
         print(f"Running: {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
+
+        pose_matrix = _load_pose_for_scan(subdir_path, image_files, ref_idx)
+        poses[f"{subdir}.jpg"] = pose_matrix.tolist()
+
+    poses_path = os.path.join(out_dir, cfg.output_paths.poses_filename)
+    with open(poses_path, "w") as f:
+        json.dump(poses, f, indent=2)
+    print(f"Wrote poses to {poses_path}")
 
 
 @hydra.main(

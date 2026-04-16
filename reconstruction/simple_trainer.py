@@ -27,13 +27,14 @@ Usage::
     python simple_trainer.py ckpt='["outputs/my_scan/gsplat/ckpts/ckpt_29999_rank0.pt"]'
 """
 
+import importlib
+import inspect
 import time
 
 import hydra
 import torch
 
 from gsplat.distributed import cli
-from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from trainer import Config, Runner
 
@@ -69,6 +70,22 @@ def main(local_rank: int, world_rank: int, world_size: int, cfg: Config) -> None
         time.sleep(1_000_000)
 
 
+def _instantiate_strategy(strategy_cfg: DictConfig):
+    """Instantiate the strategy, passing only kwargs accepted by its constructor.
+
+    Hydra deep-merges plain dict keys from parent configs, so a strategy block
+    may contain keys from the default variant (e.g. ``reset_every`` from
+    DefaultStrategy) even after overriding with a different ``_target_``. This
+    function filters to only valid constructor parameters before instantiating.
+    """
+    raw = OmegaConf.to_container(strategy_cfg, resolve=True)
+    target = raw.pop("_target_")
+    module_name, class_name = target.rsplit(".", 1)
+    cls = getattr(importlib.import_module(module_name), class_name)
+    valid = set(inspect.signature(cls.__init__).parameters) - {"self"}
+    return cls(**{k: v for k, v in raw.items() if k in valid})
+
+
 def _build_config(cfg_raw: DictConfig) -> Config:
     """Convert a (potentially nested) Hydra DictConfig to a flat ``Config``.
 
@@ -76,15 +93,15 @@ def _build_config(cfg_raw: DictConfig) -> Config:
     the ``output_dir`` / ``experiment_name`` interpolation helpers that exist
     solely for Hydra variable substitution.
     """
-    strategy = instantiate(cfg_raw.strategy)
+    strategy = _instantiate_strategy(cfg_raw.strategy)
     cfg_dict = OmegaConf.to_container(cfg_raw, resolve=True)
     cfg_dict.pop("strategy")
     # Flatten nested path sections into the top-level namespace.
     cfg_dict.update(cfg_dict.pop("input_paths", {}))
     cfg_dict.update(cfg_dict.pop("output_paths", {}))
-    # Drop interpolation-only keys not present in Config.
-    cfg_dict.pop("output_dir", None)
-    cfg_dict.pop("experiment_name", None)
+    # Drop interpolation-only or Hydra-internal keys not present in Config.
+    for key in ("output_dir", "experiment_name", "hydra"):
+        cfg_dict.pop(key, None)
     cfg_dict["bilateral_grid_shape"] = tuple(cfg_dict["bilateral_grid_shape"])
     cfg = Config(**cfg_dict, strategy=strategy)
     cfg.adjust_steps(cfg.steps_scaler)

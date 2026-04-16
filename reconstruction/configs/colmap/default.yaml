@@ -35,7 +35,7 @@ reconstruction:
   mode: triangulate          # triangulate | automatic
   load_prior_poses: false    # automatic mode only: use known robot poses as prior
   input_paths:
-    dataset_dir: ???           # required: raw scans directory (for reading robot poses)
+    poses_json: ${...feat_extract_match.input_paths.focus_stack_dir}/poses.json
     images_dir: ${...feat_extract_match.input_paths.focus_stack_dir}/${...feat_extract_match.input_paths.images_subdir}
     database_filepath: ${...feat_extract_match.output_paths.output_dir}/${...feat_extract_match.output_paths.database_filename}
   output_paths:

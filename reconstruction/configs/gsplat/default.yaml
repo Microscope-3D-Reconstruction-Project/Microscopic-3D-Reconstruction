@@ -1,6 +1,17 @@
 defaults:
-  - strategy: default
   - _self_
+
+# ── Strategy ───────────────────────────────────────────────────────────────────
+# DefaultStrategy — densification heuristics from the original 3DGS paper.
+# Override the whole strategy block in a variant config (e.g. gsplat/mcmc.yaml).
+strategy:
+  _target_: gsplat.strategy.DefaultStrategy
+  verbose: true
+  refine_start_iter: 500
+  refine_stop_iter: 15000
+  reset_every: 3000
+  refine_every: 100
+  absgrad: false
 
 # ── Viewer ─────────────────────────────────────────────────────────────────────
 disable_viewer: false
@@ -30,7 +41,7 @@ data_factor: 4
 test_every: 8
 patch_size: null
 global_scale: 1.0
-normalize_world_space: true
+normalize_world_space: true   # apply similarity transform so cameras span unit scale
 camera_model: pinhole      # "pinhole" | "ortho" | "fisheye"
 
 # ── Viewer server ──────────────────────────────────────────────────────────────

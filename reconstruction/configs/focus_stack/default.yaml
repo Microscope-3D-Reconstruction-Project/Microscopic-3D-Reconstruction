@@ -14,6 +14,7 @@ output_paths:
   images_subdir: images
   masks_subdir: masks
   depthmaps_subdir: depthmaps
+  poses_filename: poses.json
 
 # ── focus-stack CLI params ────────────────────────────────────────────────────
 focus_stack_params:

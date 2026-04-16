@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import sqlite3
@@ -25,7 +26,7 @@ class ScanPaths:
     feat_masks_path: Path  # input: masks directory
     feat_database_path: Path  # output: database.db
     # reconstruction
-    recon_dataset_dir: Path  # input: raw scans directory (for reading robot poses)
+    poses_json_path: Path  # input: poses.json written by focus_stack
     recon_images_path: Path  # input: images directory
     recon_database_path: Path  # input: database.db
     model_dir: Path  # output: sparse model directory
@@ -46,7 +47,7 @@ def create_scan_paths(cfg: DictConfig) -> ScanPaths:
         / cfg.feat_extract_match.input_paths.masks_subdir,
         feat_database_path=feat_out_dir
         / cfg.feat_extract_match.output_paths.database_filename,
-        recon_dataset_dir=Path(cfg.reconstruction.input_paths.dataset_dir),
+        poses_json_path=Path(cfg.reconstruction.input_paths.poses_json),
         recon_images_path=Path(cfg.reconstruction.input_paths.images_dir),
         recon_database_path=Path(cfg.reconstruction.input_paths.database_filepath),
         model_dir=recon_out_dir / cfg.reconstruction.output_paths.model_dirname,
@@ -54,12 +55,12 @@ def create_scan_paths(cfg: DictConfig) -> ScanPaths:
     )
 
 
-def read_poses_from_scans(dataset_path, is_camera_to_world=False, as_quaternion=False):
+def read_poses_dict(poses_json_path, is_camera_to_world=False, as_quaternion=False):
     """
-    Reads robot poses from each scan subdirectory.
+    Reads robot poses from a poses.json file written by run_focus_stack.
 
     Args:
-        dataset_path (Path): Root dataset directory containing scan* subdirectories.
+        poses_json_path (Path | str): Path to poses.json.
         is_camera_to_world (bool): If True, the stored poses are Camera-to-World and
                                    will be inverted to World-to-Camera before returning.
         as_quaternion (bool): If True, each pose is returned as a dict
@@ -67,35 +68,35 @@ def read_poses_from_scans(dataset_path, is_camera_to_world=False, as_quaternion=
                               If False, each pose is returned as a 4x4 numpy array.
 
     Returns:
-        dict: Mapping image names (e.g. 'scan001.jpg') to either 4x4 numpy arrays
+        dict: Mapping image names (e.g. 'scan00.jpg') to either 4x4 numpy arrays
               or quaternion+translation dicts, depending on as_quaternion.
     """
     poses = {}
     print(
-        f"Reading poses as {'quaternion' if as_quaternion else 'matrix'} ({'Camera-to-World' if is_camera_to_world else 'World-to-Camera'}) from scans in {dataset_path}..."
+        f"Reading poses as {'quaternion' if as_quaternion else 'matrix'} "
+        f"({'Camera-to-World' if is_camera_to_world else 'World-to-Camera'}) "
+        f"from {poses_json_path}..."
     )
-    for scan_dir in sorted(dataset_path.glob("scan*")):
-        pose_file = scan_dir / "pose.npy"
-        if pose_file.exists():
-            image_name = f"{scan_dir.name}.jpg"
-            matrix = np.load(pose_file)
-            if is_camera_to_world:
-                matrix = np.linalg.inv(matrix)
-            if as_quaternion:
-                qx, qy, qz, qw = R.from_matrix(matrix[:3, :3]).as_quat()
-                tx, ty, tz = matrix[:3, 3]
-                poses[image_name] = {
-                    "qw": qw,
-                    "qx": qx,
-                    "qy": qy,
-                    "qz": qz,
-                    "tx": tx,
-                    "ty": ty,
-                    "tz": tz,
-                }
-            else:
-                poses[image_name] = matrix
-            fmt = "quaternion" if as_quaternion else "matrix"
+    with open(poses_json_path) as f:
+        raw = json.load(f)
+    for image_name, matrix_list in raw.items():
+        matrix = np.array(matrix_list)
+        if is_camera_to_world:
+            matrix = np.linalg.inv(matrix)
+        if as_quaternion:
+            qx, qy, qz, qw = R.from_matrix(matrix[:3, :3]).as_quat()
+            tx, ty, tz = matrix[:3, 3]
+            poses[image_name] = {
+                "qw": qw,
+                "qx": qx,
+                "qy": qy,
+                "qz": qz,
+                "tx": tx,
+                "ty": ty,
+                "tz": tz,
+            }
+        else:
+            poses[image_name] = matrix
     return poses
 
 
@@ -234,8 +235,8 @@ def run_triangulation(paths: ScanPaths, cfg: DictConfig) -> Path:
     paths.model_dir.mkdir(parents=True)
 
     # Use known robot poses: lock cameras, triangulate points.
-    poses = read_poses_from_scans(
-        paths.recon_dataset_dir, is_camera_to_world=True, as_quaternion=True
+    poses = read_poses_dict(
+        paths.poses_json_path, is_camera_to_world=True, as_quaternion=True
     )
 
     reference_model_path = paths.recon_output_dir / "_reference_model"
@@ -299,8 +300,8 @@ def run_automatic_reconstruction(paths: ScanPaths, cfg: DictConfig) -> Path:
     mapping_options.num_threads = cfg.reconstruction.mapping_params.num_threads
 
     if cfg.reconstruction.load_prior_poses:
-        poses = read_poses_from_scans(
-            paths.recon_dataset_dir, is_camera_to_world=True, as_quaternion=True
+        poses = read_poses_dict(
+            paths.poses_json_path, is_camera_to_world=True, as_quaternion=True
         )
         reference_model_path = paths.recon_output_dir / "_reference_model"
         if reference_model_path.exists():
