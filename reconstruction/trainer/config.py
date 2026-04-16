@@ -17,10 +17,12 @@ class Config:
     render_traj_trim: Optional[
         int
     ] = 5  # frames to drop from each end before path generation; None disables trim
-    # ── Data ──────────────────────────────────────────────────────────────────
-    data_dir: str = "data/360_v2/garden"
+    # ── Data paths ────────────────────────────────────────────────────────────
+    model_dir: str = "outputs/sparse_model"
+    images_dir: str = "outputs/images"
+    masks_dir: Optional[str] = None
+    splat_dir: str = "outputs/gsplat"
     data_factor: int = 4
-    result_dir: str = "results/garden"
     test_every: int = 8
     patch_size: Optional[int] = None
     global_scale: float = 1.0

@@ -117,21 +117,23 @@ class Runner:
     # ── Setup helpers ─────────────────────────────────────────────────────────
 
     def _setup_dirs(self) -> None:
-        """Create the output directory tree under ``cfg.result_dir``."""
+        """Create the output directory tree under ``cfg.splat_dir``."""
         cfg = self.cfg
         for subdir in ("", "ckpts", "stats", "renders", "ply"):
-            os.makedirs(os.path.join(cfg.result_dir, subdir), exist_ok=True)
-        self.ckpt_dir = f"{cfg.result_dir}/ckpts"
-        self.stats_dir = f"{cfg.result_dir}/stats"
-        self.render_dir = f"{cfg.result_dir}/renders"
-        self.ply_dir = f"{cfg.result_dir}/ply"
-        self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
+            os.makedirs(os.path.join(cfg.splat_dir, subdir), exist_ok=True)
+        self.ckpt_dir = f"{cfg.splat_dir}/ckpts"
+        self.stats_dir = f"{cfg.splat_dir}/stats"
+        self.render_dir = f"{cfg.splat_dir}/renders"
+        self.ply_dir = f"{cfg.splat_dir}/ply"
+        self.writer = SummaryWriter(log_dir=f"{cfg.splat_dir}/tb")
 
     def _load_data(self) -> None:
         """Parse the COLMAP dataset and build train/val ``Dataset`` objects."""
         cfg = self.cfg
         self.parser = Parser(
-            data_dir=cfg.data_dir,
+            colmap_dir=cfg.model_dir,
+            images_dir=cfg.images_dir,
+            masks_dir=cfg.masks_dir,
             factor=cfg.data_factor,
             normalize=cfg.normalize_world_space,
             test_every=cfg.test_every,
@@ -286,7 +288,7 @@ class Runner:
         self.viewer = GsplatViewer(
             server=self.server,
             render_fn=self._viewer_render_fn,
-            output_dir=Path(self.cfg.result_dir),
+            output_dir=Path(self.cfg.splat_dir),
             mode="training",
         )
 
@@ -597,7 +599,7 @@ class Runner:
         cfg = self.cfg
 
         if self.world_rank == 0:
-            with open(f"{cfg.result_dir}/cfg.yml", "w") as f:
+            with open(f"{cfg.splat_dir}/cfg.yml", "w") as f:
                 yaml.dump(vars(cfg), f)
 
         max_steps = cfg.max_steps

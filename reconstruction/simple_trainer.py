@@ -5,22 +5,26 @@ All training logic lives in the ``trainer/`` package:
   trainer/model.py   — Gaussian splat initialisation
   trainer/runner.py  — Runner training / evaluation engine
 
-Configuration is loaded from configs/config.yaml (Hydra).
+Configuration is loaded from configs/gsplat/default.yaml (Hydra).
 
 Usage::
 
     # Default run (DefaultStrategy)
     CUDA_VISIBLE_DEVICES=0 python simple_trainer.py \\
-        data_dir=data/my_scan result_dir=results/my_scan
+        input_paths.model_dir=outputs/my_scan/sparse_model \\
+        input_paths.images_dir=outputs/my_scan/images \\
+        output_paths.splat_dir=outputs/my_scan/gsplat
 
     # MCMC preset
-    python simple_trainer.py +experiment=mcmc data_dir=data/my_scan
+    python simple_trainer.py +experiment=mcmc \\
+        input_paths.model_dir=outputs/my_scan/sparse_model \\
+        input_paths.images_dir=outputs/my_scan/images
 
     # Distributed training on 4 GPUs (4x fewer steps)
     CUDA_VISIBLE_DEVICES=0,1,2,3 python simple_trainer.py steps_scaler=0.25
 
     # Eval-only from a checkpoint
-    python simple_trainer.py ckpt='["results/my_scan/ckpts/ckpt_29999_rank0.pt"]'
+    python simple_trainer.py ckpt='["outputs/my_scan/gsplat/ckpts/ckpt_29999_rank0.pt"]'
 """
 
 import time
@@ -65,18 +69,37 @@ def main(local_rank: int, world_rank: int, world_size: int, cfg: Config) -> None
         time.sleep(1_000_000)
 
 
-@hydra.main(config_path="configs/gsplat", config_name="default", version_base="1.3")
-def train(cfg_raw: DictConfig) -> None:
-    """Hydra entry point: parse config, validate deps, launch distributed run."""
-    # Build the typed Config dataclass from the Hydra DictConfig
+def _build_config(cfg_raw: DictConfig) -> Config:
+    """Convert a (potentially nested) Hydra DictConfig to a flat ``Config``.
+
+    Lifts ``input_paths.*`` and ``output_paths.*`` to top-level keys and drops
+    the ``output_dir`` / ``experiment_name`` interpolation helpers that exist
+    solely for Hydra variable substitution.
+    """
     strategy = instantiate(cfg_raw.strategy)
     cfg_dict = OmegaConf.to_container(cfg_raw, resolve=True)
     cfg_dict.pop("strategy")
+    # Flatten nested path sections into the top-level namespace.
+    cfg_dict.update(cfg_dict.pop("input_paths", {}))
+    cfg_dict.update(cfg_dict.pop("output_paths", {}))
+    # Drop interpolation-only keys not present in Config.
+    cfg_dict.pop("output_dir", None)
+    cfg_dict.pop("experiment_name", None)
     cfg_dict["bilateral_grid_shape"] = tuple(cfg_dict["bilateral_grid_shape"])
     cfg = Config(**cfg_dict, strategy=strategy)
     cfg.adjust_steps(cfg.steps_scaler)
+    return cfg
 
-    # Validate optional dependencies upfront for a clear error message
+
+def run_gsplat(cfg_raw: DictConfig) -> None:
+    """Entry point for the gsplat stage; callable from ``run_pipeline.py``."""
+    cfg = _build_config(cfg_raw)
+    _validate_deps(cfg)
+    cli(main, cfg, verbose=True)
+
+
+def _validate_deps(cfg: Config) -> None:
+    """Raise early with a clear message if optional deps are missing."""
     if cfg.compression == "png":
         try:
             import plas  # noqa: F401
@@ -87,10 +110,17 @@ def train(cfg_raw: DictConfig) -> None:
                 "  pip install torchpq  # see https://github.com/DeMoriarty/TorchPQ\n"
                 "  pip install git+https://github.com/fraunhoferhhi/PLAS.git"
             )
-
     if cfg.with_ut:
         assert cfg.with_eval3d, "Training with UT requires setting `with_eval3d=true`."
 
+
+@hydra.main(config_path="configs/gsplat", config_name="default", version_base="1.3")
+def train(cfg_raw: DictConfig) -> None:
+    """Hydra entry point: parse config, validate deps, launch distributed run."""
+    cfg = _build_config(cfg_raw)
+    _validate_deps(cfg)
+
+    # Validate optional dependencies upfront for a clear error message
     cli(main, cfg, verbose=True)
 
 

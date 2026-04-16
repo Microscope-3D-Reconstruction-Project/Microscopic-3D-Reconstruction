@@ -216,7 +216,7 @@ class Evaluator:
         K = torch.from_numpy(list(self.parser.Ks_dict.values())[0]).float().to(device)
         width, height = list(self.parser.imsize_dict.values())[0]
 
-        video_dir = f"{cfg.result_dir}/videos"
+        video_dir = f"{cfg.splat_dir}/videos"
         os.makedirs(video_dir, exist_ok=True)
         writer = imageio.get_writer(f"{video_dir}/traj_{step}.mp4", fps=30)
         for i in tqdm.trange(len(camtoworlds_all), desc="Rendering trajectory"):
@@ -250,7 +250,7 @@ class Evaluator:
             return
         print("Running compression...")
         cfg = self.cfg
-        compress_dir = f"{cfg.result_dir}/compression/rank{self.world_rank}"
+        compress_dir = f"{cfg.splat_dir}/compression/rank{self.world_rank}"
         os.makedirs(compress_dir, exist_ok=True)
         self.compression_method.compress(compress_dir, self.splats)
         splats_c = self.compression_method.decompress(compress_dir)

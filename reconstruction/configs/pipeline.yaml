@@ -35,10 +35,12 @@ colmap:
     colmap_feat_extract_match: ${run.colmap_feat_extract_match}
     colmap_reconstruct: ${run.colmap_reconstruct}
 
-# ── Wire colmap sparse output → gsplat input ─────────────────────────────────
+# ── Wire experiment context into gsplat ───────────────────────────────────────
+# input_paths and output_paths resolve automatically via interpolations in
+# configs/gsplat/default.yaml once output_dir and experiment_name are set.
 gsplat:
-  data_dir: ${output_dir}/${experiment_name}/sparse_model
-  result_dir: ${output_dir}/${experiment_name}/gsplat
+  output_dir: ${output_dir}
+  experiment_name: ${experiment_name}
 
 # ── Hydra internal settings ───────────────────────────────────────────────────
 hydra:

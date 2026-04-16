@@ -12,10 +12,21 @@ compression: null          # "png" or null
 render_traj_path: interp   # "interp" | "ellipse" | "spiral"
 render_traj_trim: 5        # frames to drop from each end before path generation; null to disable
 
+# ── Experiment ─────────────────────────────────────────────────────────────────
+output_dir: outputs
+experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
+
+# ── Input / output paths ───────────────────────────────────────────────────────
+input_paths:
+  model_dir:  ${output_dir}/${experiment_name}/sparse_model
+  images_dir: ${output_dir}/${experiment_name}/images
+  masks_dir:  null                               # optional; not yet used in training
+
+output_paths:
+  splat_dir: ${output_dir}/${experiment_name}/gsplat
+
 # ── Data ───────────────────────────────────────────────────────────────────────
-data_dir: data/360_v2/garden
 data_factor: 4
-result_dir: results/garden
 test_every: 8
 patch_size: null
 global_scale: 1.0
