@@ -3,6 +3,7 @@ dataset_dir: ???              # required: directory containing scan subdirs
 
 # ── Subdirectory search ───────────────────────────────────────────────────────
 scan_prefix: scan             # only subdirs starting with this prefix are processed
+scan_dirs: null               # optional list of specific scan dirs to process (e.g. [scan01, scan05]); null = all scan_prefix dirs
 
 # ── Experiment ────────────────────────────────────────────────────────────────
 output_dir: outputs

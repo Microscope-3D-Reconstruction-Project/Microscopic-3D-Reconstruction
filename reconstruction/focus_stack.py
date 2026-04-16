@@ -69,11 +69,17 @@ def run_focus_stack(cfg: DictConfig) -> None:
     os.makedirs(out_depth_dir, exist_ok=True)
     os.makedirs(out_mask_dir, exist_ok=True)
 
-    scan_dirs = sorted(
-        d
-        for d in os.listdir(dataset_dir)
-        if os.path.isdir(os.path.join(dataset_dir, d)) and d.startswith(cfg.scan_prefix)
-    )
+    if cfg.scan_dirs is not None:
+        scan_dirs = sorted(
+            d for d in cfg.scan_dirs if os.path.isdir(os.path.join(dataset_dir, d))
+        )
+    else:
+        scan_dirs = sorted(
+            d
+            for d in os.listdir(dataset_dir)
+            if os.path.isdir(os.path.join(dataset_dir, d))
+            and d.startswith(cfg.scan_prefix)
+        )
 
     p = cfg.focus_stack_params
     flags = []
