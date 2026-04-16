@@ -53,7 +53,7 @@ steps_scaler: 1.0
 max_steps: 30000
 eval_steps: [7000, 30000]
 save_steps: [7000, 30000]
-save_ply: false
+save_ply: true
 ply_steps: [7000, 30000]
 disable_video: false
 
