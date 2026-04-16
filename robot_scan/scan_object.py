@@ -87,7 +87,9 @@ class State(Enum):
     DONE = auto()
 
 
-def _animate_configs(configs, station, station_context, simulator, meshcat):
+def _animate_configs(
+    configs, station, station_context, simulator, meshcat
+):  # TODO: This is super dangerous in hardware, would actually move the robot!!!
     """Animate robot through configs forward then in reverse (for previewing)."""
     for q in list(configs) + list(reversed(configs)):
         station.GetInputPort("iiwa.position").FixValue(station_context, q)
