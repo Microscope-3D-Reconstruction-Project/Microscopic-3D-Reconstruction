@@ -27,6 +27,7 @@ class ScanPaths:
     feat_database_path: Path  # output: database.db
     # reconstruction
     poses_json_path: Path  # input: poses.json written by focus_stack
+    intrinsics_json_path: Path  # input: intrinsics.json written by focus_stack
     recon_images_path: Path  # input: images directory
     recon_database_path: Path  # input: database.db
     model_dir: Path  # output: sparse model directory
@@ -48,6 +49,9 @@ def create_scan_paths(cfg: DictConfig) -> ScanPaths:
         feat_database_path=feat_out_dir
         / cfg.feat_extract_match.output_paths.database_filename,
         poses_json_path=Path(cfg.reconstruction.input_paths.poses_json),
+        intrinsics_json_path=Path(
+            cfg.reconstruction.input_paths.prior_intrinsics_filepath
+        ),
         recon_images_path=Path(cfg.reconstruction.input_paths.images_dir),
         recon_database_path=Path(cfg.reconstruction.input_paths.database_filepath),
         model_dir=recon_out_dir / cfg.reconstruction.output_paths.model_dirname,
@@ -100,7 +104,68 @@ def read_poses_dict(poses_json_path, is_camera_to_world=False, as_quaternion=Fal
     return poses
 
 
-def create_reference_reconstruction(db_path, output_dir, pose_dict):
+def read_intrinsics_json(intrinsics_json_path):
+    """Read camera intrinsics from an intrinsics.json file.
+
+    Args:
+        intrinsics_json_path (Path | str): Path to intrinsics.json.
+
+    Returns:
+        tuple: OPENCV camera params (fx, fy, cx, cy, k1, k2, p1, p2).
+    """
+    print(f"Reading intrinsics from {intrinsics_json_path}...")
+    with open(intrinsics_json_path) as f:
+        data = json.load(f)
+
+    cam = data["camera_matrix"]
+    fx, fy = cam[0][0], cam[1][1]
+    cx, cy = cam[0][2], cam[1][2]
+
+    dist = data.get("distortion_coefficients", [[0, 0, 0, 0, 0]])
+    coeffs = dist[0] if dist else [0, 0, 0, 0, 0]
+    # Pad to at least 5 coefficients
+    while len(coeffs) < 5:
+        coeffs.append(0.0)
+    k1, k2, p1, p2 = coeffs[0], coeffs[1], coeffs[2], coeffs[3]
+
+    print(f"  fx={fx}, fy={fy}, cx={cx}, cy={cy}")
+    print(f"  k1={k1}, k2={k2}, p1={p1}, p2={p2}")
+    return (fx, fy, cx, cy, k1, k2, p1, p2)
+
+
+def apply_prior_intrinsics_to_database(db_path, intrinsics_params):
+    """Update camera intrinsics in a COLMAP database.
+
+    Overwrites the params blob for every camera in the database with the
+    given OPENCV parameters.
+
+    Args:
+        db_path (Path | str): Path to the COLMAP database.db.
+        intrinsics_params (tuple): (fx, fy, cx, cy, k1, k2, p1, p2).
+    """
+    params_array = np.array(intrinsics_params, dtype=np.float64)
+    params_blob = params_array.tobytes()
+
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("SELECT camera_id FROM cameras")
+    camera_ids = [row[0] for row in cursor.fetchall()]
+
+    for cam_id in camera_ids:
+        cursor.execute(
+            "UPDATE cameras SET params = ?, prior_focal_length = 1 WHERE camera_id = ?",
+            (params_blob, cam_id),
+        )
+        print(f"  Updated camera {cam_id} intrinsics in database.")
+
+    conn.commit()
+    conn.close()
+    print(f"Applied prior intrinsics to {len(camera_ids)} camera(s) in {db_path}.")
+
+
+def create_reference_reconstruction(
+    db_path, output_dir, pose_dict, intrinsics_params=None
+):
     """
     Creates a COLMAP text model from the database and known poses.
 
@@ -110,6 +175,9 @@ def create_reference_reconstruction(db_path, output_dir, pose_dict):
         pose_dict (dict): Mapping image names to quaternion+translation dicts
                           {'qw','qx','qy','qz','tx','ty','tz'}, as returned by
                           read_poses_from_scans(as_quaternion=True).
+        intrinsics_params (tuple | None): Optional OPENCV params
+                          (fx, fy, cx, cy, k1, k2, p1, p2). If provided,
+                          overrides camera params read from the DB.
     """
     output_dir = Path(output_dir)
     if output_dir.exists():
@@ -130,7 +198,10 @@ def create_reference_reconstruction(db_path, output_dir, pose_dict):
     with open(output_dir / "cameras.txt", "w") as f:
         f.write("# CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n")
         for cam_id, model_id, width, height, params_blob in db_cameras:
-            params = np.frombuffer(params_blob, dtype=np.float64)
+            if intrinsics_params is not None:
+                params = np.array(intrinsics_params, dtype=np.float64)
+            else:
+                params = np.frombuffer(params_blob, dtype=np.float64)
             model_name = pycolmap.CameraModelId(model_id).name
             params_str = " ".join([str(p) for p in params])
             f.write(f"{cam_id} {model_name} {width} {height} {params_str}\n")
@@ -206,6 +277,12 @@ def run_feature_extraction_and_matching(paths: ScanPaths, cfg: DictConfig) -> No
         f"Feature extraction took {extraction_end_time - extraction_start_time:.2f} seconds"
     )
 
+    # Load prior intrinsics if enabled
+    intrinsics_params = None
+    if cfg.reconstruction.load_prior_intrinsics:
+        intrinsics_params = read_intrinsics_json(paths.intrinsics_json_path)
+        apply_prior_intrinsics_to_database(paths.feat_database_path, intrinsics_params)
+
     feature_matching_options = pycolmap.FeatureMatchingOptions()
     feature_matching_options.use_gpu = cfg.feat_extract_match.matching.use_gpu
     feature_matching_options.num_threads = cfg.feat_extract_match.matching.num_threads
@@ -234,6 +311,12 @@ def run_triangulation(paths: ScanPaths, cfg: DictConfig) -> Path:
         shutil.rmtree(paths.model_dir)
     paths.model_dir.mkdir(parents=True)
 
+    # Load prior intrinsics if enabled
+    intrinsics_params = None
+    if cfg.reconstruction.load_prior_intrinsics:
+        intrinsics_params = read_intrinsics_json(paths.intrinsics_json_path)
+        apply_prior_intrinsics_to_database(paths.recon_database_path, intrinsics_params)
+
     # Use known robot poses: lock cameras, triangulate points.
     poses = read_poses_dict(
         paths.poses_json_path, is_camera_to_world=True, as_quaternion=True
@@ -246,7 +329,10 @@ def run_triangulation(paths: ScanPaths, cfg: DictConfig) -> Path:
 
     print("Creating reference reconstruction...")
     create_reference_reconstruction(
-        paths.recon_database_path, reference_model_path, poses
+        paths.recon_database_path,
+        reference_model_path,
+        poses,
+        intrinsics_params=intrinsics_params,
     )
 
     reference = pycolmap.Reconstruction()
@@ -262,7 +348,7 @@ def run_triangulation(paths: ScanPaths, cfg: DictConfig) -> Path:
         output_path=paths.model_dir,
         clear_points=True,
         options=triangulation_options,
-        refine_intrinsics=True,
+        refine_intrinsics=cfg.reconstruction.refine_intrinsics,
     )
     print(result.summary())
 
@@ -274,6 +360,12 @@ def run_automatic_reconstruction(paths: ScanPaths, cfg: DictConfig) -> Path:
     if paths.model_dir.exists():
         shutil.rmtree(paths.model_dir)
     paths.model_dir.mkdir(parents=True)
+
+    # Load prior intrinsics if enabled
+    intrinsics_params = None
+    if cfg.reconstruction.load_prior_intrinsics:
+        intrinsics_params = read_intrinsics_json(paths.intrinsics_json_path)
+        apply_prior_intrinsics_to_database(paths.recon_database_path, intrinsics_params)
 
     mapping_options = pycolmap.IncrementalPipelineOptions()
 
@@ -298,6 +390,9 @@ def run_automatic_reconstruction(paths: ScanPaths, cfg: DictConfig) -> Path:
     )
     mapping_options.ba_use_gpu = cfg.reconstruction.mapping_params.ba_use_gpu
     mapping_options.num_threads = cfg.reconstruction.mapping_params.num_threads
+    mapping_options.ba_refine_focal_length = cfg.reconstruction.refine_intrinsics
+    mapping_options.ba_refine_principal_point = cfg.reconstruction.refine_intrinsics
+    mapping_options.ba_refine_extra_params = cfg.reconstruction.refine_intrinsics
 
     if cfg.reconstruction.load_prior_poses:
         poses = read_poses_dict(
@@ -310,7 +405,10 @@ def run_automatic_reconstruction(paths: ScanPaths, cfg: DictConfig) -> Path:
 
         print("Creating reference reconstruction...")
         create_reference_reconstruction(
-            paths.recon_database_path, reference_model_path, poses
+            paths.recon_database_path,
+            reference_model_path,
+            poses,
+            intrinsics_params=intrinsics_params,
         )
 
         print("Running automatic reconstruction with prior poses...")

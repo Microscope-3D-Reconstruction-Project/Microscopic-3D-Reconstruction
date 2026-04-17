@@ -2,6 +2,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 
 import hydra
@@ -128,6 +129,15 @@ def run_focus_stack(cfg: DictConfig) -> None:
     with open(poses_path, "w") as f:
         json.dump(poses, f, indent=2)
     print(f"Wrote poses to {poses_path}")
+
+    # Copy intrinsics.json from dataset directory to output directory
+    src_intrinsics = os.path.join(dataset_dir, cfg.output_paths.intrinsics_filename)
+    dst_intrinsics = os.path.join(out_dir, cfg.output_paths.intrinsics_filename)
+    if os.path.exists(src_intrinsics):
+        shutil.copy2(src_intrinsics, dst_intrinsics)
+        print(f"Copied intrinsics to {dst_intrinsics}")
+    else:
+        print(f"Warning: intrinsics file not found at {src_intrinsics}, skipping.")
 
 
 @hydra.main(

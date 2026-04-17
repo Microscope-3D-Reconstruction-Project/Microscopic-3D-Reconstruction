@@ -34,8 +34,11 @@ feat_extract_match:
 reconstruction:
   mode: triangulate          # triangulate | automatic
   load_prior_poses: false    # automatic mode only: use known robot poses as prior
+  load_prior_intrinsics: false  # use known camera intrinsics as prior
+  refine_intrinsics: true    # whether to refine camera intrinsics during bundle adjustment
   input_paths:
     poses_json: ${...feat_extract_match.input_paths.focus_stack_dir}/poses.json
+    prior_intrinsics_filepath: ${...feat_extract_match.input_paths.focus_stack_dir}/intrinsics.json
     images_dir: ${...feat_extract_match.input_paths.focus_stack_dir}/${...feat_extract_match.input_paths.images_subdir}
     database_filepath: ${...feat_extract_match.output_paths.output_dir}/${...feat_extract_match.output_paths.database_filename}
   output_paths:
