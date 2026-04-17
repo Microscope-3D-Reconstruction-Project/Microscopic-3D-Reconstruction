@@ -66,6 +66,9 @@ def run_focus_stack(cfg: DictConfig) -> None:
     out_image_dir = os.path.join(out_dir, cfg.output_paths.images_subdir)
     out_depth_dir = os.path.join(out_dir, cfg.output_paths.depthmaps_subdir)
     out_mask_dir = os.path.join(out_dir, cfg.output_paths.masks_subdir)
+    for path in (out_image_dir, out_depth_dir, out_mask_dir):
+        if os.path.isdir(path):
+            shutil.rmtree(path)
     os.makedirs(out_image_dir, exist_ok=True)
     os.makedirs(out_depth_dir, exist_ok=True)
     os.makedirs(out_mask_dir, exist_ok=True)
