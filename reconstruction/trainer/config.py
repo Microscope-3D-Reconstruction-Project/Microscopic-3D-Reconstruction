@@ -7,6 +7,9 @@ from typing_extensions import Literal, assert_never
 
 @dataclass
 class Config:
+    # ── Miscellaneous ─────────────────────────────────────────────────────────
+    random_seed: int = 0
+
     # ── Viewer ────────────────────────────────────────────────────────────────
     disable_viewer: bool = False
 
