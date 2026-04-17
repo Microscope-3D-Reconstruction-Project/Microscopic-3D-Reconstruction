@@ -8,6 +8,8 @@ defaults:
 output_dir: outputs
 experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 
+random_seed: 0
+
 # ── Dataset ──────────────────────────────────────────────────────────────────
 dataset_dir: ???              # required: directory containing scan subdirs
 
@@ -23,11 +25,13 @@ focus_stack:
   dataset_dir: ${dataset_dir}
   output_dir: ${output_dir}
   experiment_name: ${experiment_name}
+  random_seed: ${random_seed} # focus stacking should already be deterministic but keeping as a placeholder just in case additional changes are made
 
 # ── Wire experiment dir into colmap ───────────────────────────────────────────
 colmap:
   output_dir: ${output_dir}
   experiment_name: ${experiment_name}
+  random_seed: ${random_seed}
   run:
     colmap_feat_extract_match: ${run.colmap_feat_extract_match}
     colmap_reconstruct: ${run.colmap_reconstruct}
@@ -38,6 +42,7 @@ colmap:
 gsplat:
   output_dir: ${output_dir}
   experiment_name: ${experiment_name}
+  random_seed: ${random_seed}
 
 # ── Hydra internal settings ───────────────────────────────────────────────────
 hydra:

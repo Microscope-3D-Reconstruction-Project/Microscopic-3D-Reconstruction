@@ -1,5 +1,5 @@
 # ── Pipeline flags ────────────────────────────────────────────────────────────
-random_seed: 1
+random_seed: 0
 
 # ── Stage toggles (can also be driven by pipeline.yaml) ───────────────────────
 run:

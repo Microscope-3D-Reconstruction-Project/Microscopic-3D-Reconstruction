@@ -75,7 +75,7 @@ class Runner:
         world_size: int,
         cfg: Config,
     ) -> None:
-        set_random_seed(42 + local_rank)
+        set_random_seed(cfg.random_seed + local_rank)
 
         self.cfg = cfg
         self.world_rank = world_rank

@@ -1,6 +1,8 @@
 defaults:
   - _self_
 
+random_seed: 0
+
 # ── Strategy ───────────────────────────────────────────────────────────────────
 # DefaultStrategy — densification heuristics from the original 3DGS paper.
 # Override the whole strategy block in a variant config (e.g. gsplat/mcmc.yaml).
