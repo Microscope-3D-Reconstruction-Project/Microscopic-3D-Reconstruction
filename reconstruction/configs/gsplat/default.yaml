@@ -32,7 +32,7 @@ experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 # ── Input / output paths ───────────────────────────────────────────────────────
 input_paths:
   model_dir:  ${output_dir}/${experiment_name}/sparse_model
-  images_dir: ${output_dir}/${experiment_name}/images
+  images_dir: ${output_dir}/${experiment_name}/focus_stacked_images
   masks_dir:  null                               # optional; not yet used in training
 
 output_paths:
