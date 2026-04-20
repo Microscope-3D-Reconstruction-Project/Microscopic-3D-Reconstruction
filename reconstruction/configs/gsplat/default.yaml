@@ -33,7 +33,7 @@ experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 input_paths:
   model_dir:  ${output_dir}/${experiment_name}/sparse_model
   images_dir: ${output_dir}/${experiment_name}/focus_stacked_images
-  masks_dir:  null                               # optional mask directory
+  masks_dir:  ${output_dir}/${experiment_name}/masks                               # optional mask directory
 
 output_paths:
   splat_dir: ${output_dir}/${experiment_name}/gsplat
