@@ -68,6 +68,24 @@ def _resolve_mask_path(masks_dir: str, image_name: str) -> Optional[str]:
     return None
 
 
+def _has_valid_undistortion(
+    K_undist: np.ndarray, roi_undist: tuple, width: int, height: int
+) -> bool:
+    """Return whether OpenCV undistortion produced a usable camera/ROI."""
+    if not np.isfinite(K_undist).all():
+        return False
+    if K_undist[0, 0] <= 0 or K_undist[1, 1] <= 0:
+        return False
+    x, y, w, h = roi_undist
+    if w <= 0 or h <= 0:
+        return False
+    if x < 0 or y < 0:
+        return False
+    if x + w > width or y + h > height:
+        return False
+    return True
+
+
 def _camera_model_name(cam) -> str:
     """Return the camera model as a plain string regardless of pycolmap version."""
     model = cam.model
@@ -264,7 +282,7 @@ class Parser:
 
         colmap_files = sorted(_get_rel_paths(colmap_image_dir))
         image_files = sorted(_get_rel_paths(image_dir))
-        if factor > 1 and os.path.splitext(image_files[0])[1].lower() == ".jpg":
+        if factor > 1 and os.path.splitext(image_files[0])[1].lower() == ".png":
             image_dir = _resize_image_folder(
                 colmap_image_dir, image_dir + "_png", factor=factor
             )
@@ -383,10 +401,20 @@ class Parser:
                 K_undist, roi_undist = cv2.getOptimalNewCameraMatrix(
                     K, dist_params, (width, height), 0
                 )
-                mapx, mapy = cv2.initUndistortRectifyMap(
-                    K, dist_params, None, K_undist, (width, height), cv2.CV_32FC1
-                )
-                mask = None
+                if _has_valid_undistortion(K_undist, roi_undist, width, height):
+                    mapx, mapy = cv2.initUndistortRectifyMap(
+                        K, dist_params, None, K_undist, (width, height), cv2.CV_32FC1
+                    )
+                else:
+                    print(
+                        f"Warning: skipping undistortion for camera {camera_id} "
+                        f"because OpenCV returned an invalid ROI {roi_undist} "
+                        f"or intrinsics."
+                    )
+                    self.Ks_dict[camera_id] = K
+                    self.params_dict[camera_id] = np.empty(0, dtype=np.float32)
+                    self.imsize_dict[camera_id] = (width, height)
+                    continue
             elif camtype == "fisheye":
                 fx, fy = K[0, 0], K[1, 1]
                 cx, cy = K[0, 2], K[1, 2]
