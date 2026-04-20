@@ -475,11 +475,20 @@ class Runner:
         )
 
         # ── Loss ──────────────────────────────────────────────────────────
-        l1loss = F.l1_loss(colors, pixels)
+        if masks is not None:
+            l1loss = F.l1_loss(colors[masks], pixels[masks])
+            colors_ssim = colors * masks[..., None]
+            pixels_ssim = pixels * masks[..., None]
+        else:
+            l1loss = F.l1_loss(colors, pixels)
+            colors_ssim = colors
+            pixels_ssim = pixels
         ssimloss = 1.0 - fused_ssim(
-            colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2), padding="valid"
+            colors_ssim.permute(0, 3, 1, 2),
+            pixels_ssim.permute(0, 3, 1, 2),
+            padding="valid",
         )
-        loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
+        loss = torch.lerp(l1loss, ssimloss, cfg.ssim_lambda)
 
         depthloss = tvloss = None
         if cfg.depth_loss and points is not None and depths_gt is not None:

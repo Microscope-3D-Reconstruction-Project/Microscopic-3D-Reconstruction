@@ -54,6 +54,20 @@ def _resize_image_folder(image_dir: str, resized_dir: str, factor: int) -> str:
     return resized_dir
 
 
+def _resolve_mask_path(masks_dir: str, image_name: str) -> Optional[str]:
+    """Resolve a per-image mask path, preferring a PNG with the same stem."""
+    candidates = [
+        os.path.join(masks_dir, image_name),
+        os.path.join(masks_dir, os.path.splitext(image_name)[0] + ".png"),
+        os.path.join(masks_dir, os.path.splitext(image_name)[0] + ".jpg"),
+        os.path.join(masks_dir, os.path.splitext(image_name)[0] + ".jpeg"),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def _camera_model_name(cam) -> str:
     """Return the camera model as a plain string regardless of pycolmap version."""
     model = cam.model
@@ -129,8 +143,7 @@ class Parser:
         images_dir: Path to the directory containing the source images that
             COLMAP registered.
         masks_dir: Optional path to a directory containing per-image binary
-            mask PNGs (e.g. produced by focus-stacking).  Accepted but not yet
-            used in the training pipeline — reserved for future use.
+            masks.
         factor: Integer downsampling factor applied to intrinsics and image
             sizes.  ``1`` means no downsampling.
         normalize: If ``True``, apply a similarity transform so that camera
@@ -161,6 +174,10 @@ class Parser:
         assert os.path.exists(
             images_dir
         ), f"Images directory {images_dir!r} does not exist."
+        if masks_dir is not None:
+            assert os.path.exists(
+                masks_dir
+            ), f"Masks directory {masks_dir!r} does not exist."
 
         reconstruction = pycolmap.Reconstruction(colmap_dir)
         imdata = reconstruction.images  # dict[image_id -> Image]
@@ -175,7 +192,6 @@ class Parser:
         Ks_dict: Dict[int, np.ndarray] = {}
         params_dict: Dict[int, np.ndarray] = {}
         imsize_dict: Dict[int, tuple] = {}
-        mask_dict: Dict[int, Any] = {}
         camtype_dict: Dict[int, str] = {}
         bottom = np.array([0, 0, 0, 1], dtype=np.float64).reshape(1, 4)
 
@@ -199,7 +215,6 @@ class Parser:
                 params_dict[camera_id] = distortion
                 camtype_dict[camera_id] = camtype
                 imsize_dict[camera_id] = (cam.width // factor, cam.height // factor)
-                mask_dict[camera_id] = None
                 if model_name not in ("SIMPLE_PINHOLE", "PINHOLE"):
                     print(
                         f"Warning: camera {camera_id} uses {model_name}. "
@@ -256,6 +271,19 @@ class Parser:
             image_files = sorted(_get_rel_paths(image_dir))
         colmap_to_image = dict(zip(colmap_files, image_files))
         image_paths = [os.path.join(image_dir, colmap_to_image[f]) for f in image_names]
+        mask_paths = (
+            [_resolve_mask_path(masks_dir, image_name) for image_name in image_names]
+            if masks_dir is not None
+            else [None] * len(image_names)
+        )
+        if masks_dir is not None:
+            num_missing_masks = sum(mask_path is None for mask_path in mask_paths)
+            if num_missing_masks == len(mask_paths):
+                print(f"Warning: no per-image masks were found in {masks_dir!r}.")
+            elif num_missing_masks > 0:
+                print(
+                    f"Warning: missing masks for {num_missing_masks} / {len(mask_paths)} images."
+                )
 
         # 3-D points.
         point3D_ids = sorted(reconstruction.points3D.keys())
@@ -319,7 +347,7 @@ class Parser:
         self.Ks_dict: Dict[int, np.ndarray] = Ks_dict
         self.params_dict: Dict[int, np.ndarray] = params_dict
         self.imsize_dict: Dict[int, tuple] = imsize_dict
-        self.mask_dict: Dict[int, Any] = mask_dict
+        self.mask_paths: List[Optional[str]] = mask_paths
         self.points: np.ndarray = points
         self.points_err: np.ndarray = points_err
         self.points_rgb: np.ndarray = points_rgb
@@ -398,8 +426,6 @@ class Parser:
             self.Ks_dict[camera_id] = K_undist
             self.roi_undist_dict[camera_id] = roi_undist
             self.imsize_dict[camera_id] = (roi_undist[2], roi_undist[3])
-            self.mask_dict[camera_id] = mask
-
         camera_locations = camtoworlds[:, :3, 3]
         scene_center = np.mean(camera_locations, axis=0)
         self.scene_scale: float = float(
@@ -438,20 +464,41 @@ class Dataset:
         K = self.parser.Ks_dict[camera_id].copy()
         params = self.parser.params_dict[camera_id]
         camtoworlds = self.parser.camtoworlds[index]
-        mask = self.parser.mask_dict[camera_id]
+        mask_path = self.parser.mask_paths[index]
+        mask = None
+        if mask_path is not None:
+            mask = imageio.imread(mask_path)
+            if mask.ndim == 3:
+                mask = mask[..., 0]
+            mask = mask > 0
 
         if len(params) > 0:
             mapx = self.parser.mapx_dict[camera_id]
             mapy = self.parser.mapy_dict[camera_id]
             image = cv2.remap(image, mapx, mapy, cv2.INTER_LINEAR)
+            if mask is not None:
+                mask = (
+                    cv2.remap(
+                        mask.astype(np.uint8),
+                        mapx,
+                        mapy,
+                        cv2.INTER_NEAREST,
+                        borderMode=cv2.BORDER_CONSTANT,
+                    )
+                    > 0
+                )
             x, y, w, h = self.parser.roi_undist_dict[camera_id]
             image = image[y : y + h, x : x + w]
+            if mask is not None:
+                mask = mask[y : y + h, x : x + w]
 
         if self.patch_size is not None:
             h, w = image.shape[:2]
             x = np.random.randint(0, max(w - self.patch_size, 1))
             y = np.random.randint(0, max(h - self.patch_size, 1))
             image = image[y : y + self.patch_size, x : x + self.patch_size]
+            if mask is not None:
+                mask = mask[y : y + self.patch_size, x : x + self.patch_size]
             K[0, 2] -= x
             K[1, 2] -= y
 

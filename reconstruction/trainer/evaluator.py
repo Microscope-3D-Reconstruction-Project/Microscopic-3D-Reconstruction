@@ -29,6 +29,13 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from .config import Config
 
 
+def _apply_eval_mask(colors, pixels, masks):
+    """Zero masked pixels on both sides, matching training-time SSIM masking."""
+    if masks is None:
+        return colors, pixels
+    return colors * masks[..., None], pixels * masks[..., None]
+
+
 class Evaluator:
     """Computes image-quality metrics and writes evaluation artefacts.
 
@@ -126,20 +133,27 @@ class Evaluator:
             torch.cuda.synchronize()
             ellipse_time += max(time.time() - tic, 1e-10)
             colors = torch.clamp(colors, 0.0, 1.0)
+            colors_eval, pixels_eval = _apply_eval_mask(colors, pixels, masks)
 
             if self.world_rank == 0:
-                canvas = torch.cat([pixels, colors], dim=2).squeeze(0).cpu().numpy()
+                canvas = (
+                    torch.cat([pixels_eval, colors_eval], dim=2)
+                    .squeeze(0)
+                    .cpu()
+                    .numpy()
+                )
                 imageio.imwrite(
                     f"{self.render_dir}/{stage}_step{step}_{i:04d}.png",
                     (canvas * 255).astype(np.uint8),
                 )
-                pixels_p = pixels.permute(0, 3, 1, 2)
-                colors_p = colors.permute(0, 3, 1, 2)
+                pixels_p = pixels_eval.permute(0, 3, 1, 2)
+                colors_p = colors_eval.permute(0, 3, 1, 2)
                 metrics["psnr"].append(self.psnr(colors_p, pixels_p))
                 metrics["ssim"].append(self.ssim(colors_p, pixels_p))
                 metrics["lpips"].append(self.lpips(colors_p, pixels_p))
                 if cfg.use_bilateral_grid and self.color_correct is not None:
                     cc = self.color_correct(colors, pixels)
+                    cc, _ = _apply_eval_mask(cc, pixels, masks)
                     cc_p = cc.permute(0, 3, 1, 2)
                     metrics["cc_psnr"].append(self.psnr(cc_p, pixels_p))
                     metrics["cc_ssim"].append(self.ssim(cc_p, pixels_p))
