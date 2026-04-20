@@ -108,7 +108,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
         ref_idx = (
             len(image_files) // 2
         )  # picks the middle one TODO: take a look at this later
-        output_file = os.path.join(out_image_dir, f"{subdir}.jpg")
+        output_file = os.path.join(out_image_dir, f"{subdir}.png")
         depth_file = os.path.join(out_depth_dir, f"{subdir}.png")
         mask_file = os.path.join(out_mask_dir, f"{subdir}.png")
         cmd = (
@@ -126,7 +126,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
         subprocess.run(cmd, check=True)
 
         pose_matrix = _load_pose_for_scan(subdir_path, image_files, ref_idx)
-        poses[f"{subdir}.jpg"] = pose_matrix.tolist()
+        poses[f"{subdir}.png"] = pose_matrix.tolist()
 
     poses_path = os.path.join(out_dir, cfg.output_paths.poses_filename)
     with open(poses_path, "w") as f:
