@@ -7,7 +7,7 @@ import torch
 from datasets.colmap import Parser
 from gsplat.optimizers import SelectiveAdam
 
-from utils import knn, rgb_to_sh
+from .utils import knn, rgb_to_sh
 
 
 def create_splats_with_optimizers(

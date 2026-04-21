@@ -1,30 +1,32 @@
 """simple_trainer.py — Hydra entry point for 3D Gaussian Splatting training.
 
-All training logic lives in the ``trainer/`` package:
-  trainer/config.py  — Config dataclass
-  trainer/model.py   — Gaussian splat initialisation
-  trainer/runner.py  — Runner training / evaluation engine
+All training logic lives in the ``gs_3d/`` package:
+  gs_3d/config.py  — Config dataclass
+  gs_3d/model.py   — Gaussian splat initialisation
+  gs_3d/runner.py  — Runner training / evaluation engine
+  gs_3d/utils.py   — Optimization modules and math helpers
 
-Configuration is loaded from configs/gsplat/default.yaml (Hydra).
+Configuration is loaded from configs/gs_3d/default.yaml (Hydra).
 
 Usage::
 
     # Default run (DefaultStrategy)
-    CUDA_VISIBLE_DEVICES=0 python simple_trainer.py \\
+    CUDA_VISIBLE_DEVICES=0 python gs_3d/simple_trainer.py \\
         input_paths.model_dir=outputs/my_scan/sparse_model \\
         input_paths.images_dir=outputs/my_scan/images \\
-        output_paths.splat_dir=outputs/my_scan/gsplat
+        output_paths.splat_dir=outputs/my_scan/gs_3d
 
     # MCMC preset
-    python simple_trainer.py +experiment=mcmc \\
+    python gs_3d/simple_trainer.py +experiment=mcmc \\
         input_paths.model_dir=outputs/my_scan/sparse_model \\
         input_paths.images_dir=outputs/my_scan/images
 
     # Distributed training on 4 GPUs (4x fewer steps)
-    CUDA_VISIBLE_DEVICES=0,1,2,3 python simple_trainer.py steps_scaler=0.25
+    CUDA_VISIBLE_DEVICES=0,1,2,3 python gs_3d/simple_trainer.py steps_scaler=0.25
 
     # Eval-only from a checkpoint
-    python simple_trainer.py ckpt='["outputs/my_scan/gsplat/ckpts/ckpt_29999_rank0.pt"]'
+    python gs_3d/simple_trainer.py ckpt='["outputs/my_scan/gs_3d/ckpts/ckpt_29999_rank0.pt"]'
+
 """
 
 import importlib
@@ -34,9 +36,9 @@ import time
 import hydra
 import torch
 
+from gs_3d import Config, Runner
 from gsplat.distributed import cli
 from omegaconf import DictConfig, OmegaConf
-from trainer import Config, Runner
 
 
 def main(local_rank: int, world_rank: int, world_size: int, cfg: Config) -> None:
@@ -108,8 +110,8 @@ def _build_config(cfg_raw: DictConfig) -> Config:
     return cfg
 
 
-def run_gsplat(cfg_raw: DictConfig) -> None:
-    """Entry point for the gsplat stage; callable from ``run_pipeline.py``."""
+def run_gs_3d(cfg_raw: DictConfig) -> None:
+    """Entry point for the 3D Gaussian Splatting stage; callable from ``run_pipeline.py``."""
     cfg = _build_config(cfg_raw)
     _validate_deps(cfg)
     cli(main, cfg, verbose=True)
@@ -131,7 +133,7 @@ def _validate_deps(cfg: Config) -> None:
         assert cfg.with_eval3d, "Training with UT requires setting `with_eval3d=true`."
 
 
-@hydra.main(config_path="configs/gsplat", config_name="default", version_base="1.3")
+@hydra.main(config_path="../configs/gs_3d", config_name="default", version_base="1.3")
 def train(cfg_raw: DictConfig) -> None:
     """Hydra entry point: parse config, validate deps, launch distributed run."""
     cfg = _build_config(cfg_raw)

@@ -1,7 +1,8 @@
 defaults:
   - focus_stack: default
   - colmap: default
-  - gsplat: default
+  - gs_3d: default
+  - gs_2d: default
   - _self_
 
 # ── Experiment ────────────────────────────────────────────────────────────────
@@ -18,7 +19,7 @@ run:
   focus_stack: true
   colmap_feat_extract_match: true
   colmap_reconstruct: true
-  gsplat: true
+  splatting_method: gs_3d # choice of gs_3d, gs_2d, or null which will not run splatting
 
 # ── Wire experiment dir into focus_stack ─────────────────────────────────────
 focus_stack:
@@ -36,10 +37,15 @@ colmap:
     colmap_feat_extract_match: ${run.colmap_feat_extract_match}
     colmap_reconstruct: ${run.colmap_reconstruct}
 
-# ── Wire experiment context into gsplat ───────────────────────────────────────
+# ── Wire experiment context into GS methods ──────────────────────────────────
 # input_paths and output_paths resolve automatically via interpolations in
-# configs/gsplat/default.yaml once output_dir and experiment_name are set.
-gsplat:
+# configs/gs_3d/default.yaml once output_dir and experiment_name are set.
+gs_3d:
+  output_dir: ${output_dir}
+  experiment_name: ${experiment_name}
+  random_seed: ${random_seed}
+
+gs_2d:
   output_dir: ${output_dir}
   experiment_name: ${experiment_name}
   random_seed: ${random_seed}

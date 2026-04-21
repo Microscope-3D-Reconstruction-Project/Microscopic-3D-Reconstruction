@@ -1,8 +1,8 @@
 """Runner — orchestrates setup, rasterization, and the training loop.
 
 Heavy output concerns are delegated:
-  TrainingLogger  (trainer/logger.py)    — TensorBoard, checkpoints, PLY export
-  Evaluator       (trainer/evaluator.py) — eval metrics, videos, compression
+  TrainingLogger  (gs_3d/logger.py)    — TensorBoard, checkpoints, PLY export
+  Evaluator       (gs_3d/evaluator.py) — eval metrics, videos, compression
 
 The training loop (``train``) is kept readable by extracting one full
 forward-backward-optimizer iteration into ``_train_step``.
@@ -26,19 +26,18 @@ from fused_ssim import fused_ssim
 from gsplat.compression import PngCompression
 from gsplat.rendering import rasterization
 from gsplat.strategy import DefaultStrategy, MCMCStrategy
-from gsplat_viewer import GsplatRenderTabState, GsplatViewer
 from nerfview import CameraState, RenderTabState, apply_float_colormap
 from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from typing_extensions import Literal, assert_never
-
-from utils import AppearanceOptModule, CameraOptModule, set_random_seed
+from visualizers.gsplat_viewer_3dgs import GsplatRenderTabState, GsplatViewer
 
 from .config import Config
 from .evaluator import Evaluator
 from .logger import TrainingLogger
 from .model import create_splats_with_optimizers
+from .utils import AppearanceOptModule, CameraOptModule, set_random_seed
 
 
 class Runner:

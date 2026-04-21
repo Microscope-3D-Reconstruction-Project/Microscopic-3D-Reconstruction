@@ -20,3 +20,10 @@ init_opa: 0.5
 init_scale: 0.1
 opacity_reg: 0.01
 scale_reg: 0.01
+
+hydra:
+  job:
+    chdir: false           # Keep the working directory; don't chdir to outputs/
+  run:
+    dir: outputs/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  output_subdir: .hydra   # where hydra config snapshots are written (relative to run.dir)

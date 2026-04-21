@@ -1,0 +1,20 @@
+defaults:
+  - _self_
+
+random_seed: 0
+
+# ── 2D Gaussian Splatting Config (Placeholder) ──────────────────────────────
+output_dir: outputs
+experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
+
+# Add 2D-specific parameters here...
+max_steps: 10000
+data_factor: 1
+
+# ── Hydra internal settings ───────────────────────────────────────────────────
+hydra:
+  job:
+    chdir: false           # Keep the working directory; don't chdir to outputs/
+  run:
+    dir: outputs/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  output_subdir: .hydra   # where hydra config snapshots are written (relative to run.dir)

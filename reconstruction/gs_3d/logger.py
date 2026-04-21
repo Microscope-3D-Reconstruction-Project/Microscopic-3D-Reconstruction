@@ -17,9 +17,8 @@ from gsplat import export_splats
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
 
-from utils import rgb_to_sh
-
 from .config import Config
+from .utils import rgb_to_sh
 
 
 class TrainingLogger:

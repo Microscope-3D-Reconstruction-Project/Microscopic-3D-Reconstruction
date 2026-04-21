@@ -36,7 +36,7 @@ input_paths:
   masks_dir:  ${output_dir}/${experiment_name}/masks                               # optional mask directory
 
 output_paths:
-  splat_dir: ${output_dir}/${experiment_name}/gsplat
+  splat_dir: ${output_dir}/${experiment_name}/gs_3d
 
 # ── Data ───────────────────────────────────────────────────────────────────────
 data_factor: 4
