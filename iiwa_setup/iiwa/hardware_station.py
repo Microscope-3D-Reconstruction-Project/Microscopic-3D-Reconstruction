@@ -193,6 +193,7 @@ class InternalStationDiagram(Diagram):
         hemisphere_angle,
         hemisphere_radius,
         package_xmls: List[str] = [],
+        hemisphere_pos_offset=None,
     ):
         super().__init__()
 
@@ -226,6 +227,10 @@ class InternalStationDiagram(Diagram):
                 0.36,
             ]
         )
+        if hemisphere_pos_offset is not None:
+            self.hemisphere_pos = self.hemisphere_pos + np.asarray(
+                hemisphere_pos_offset, dtype=float
+            )
 
         add_floor(self._plant)
         add_wall(self._plant)
@@ -236,7 +241,7 @@ class InternalStationDiagram(Diagram):
             self.hemisphere_pos[1],
             self.hemisphere_pos[2],
         ]
-        wall_width = 0.075
+        wall_width = 0.125
         add_wall(
             self._plant,
             wall_width=wall_width,
@@ -485,6 +490,7 @@ class IiwaHardwareStationDiagram(Diagram):
         control_mode: Union[IiwaControlMode, str] = IiwaControlMode.kPositionOnly,
         create_point_clouds: bool = False,
         package_xmls: List[str] = [],
+        hemisphere_pos_offset=None,
     ):
         """
         Args:
@@ -496,6 +502,8 @@ class IiwaHardwareStationDiagram(Diagram):
             create_point_clouds (bool, optional): Whether to create point clouds from
                 the camera images. Defaults to False. Setting this to True might add
                 computational overhead.
+            hemisphere_pos_offset: optional (3,) array added on top of the position
+                derived from hemisphere_dist/angle, to translate all spheres/geometry.
         """
         super().__init__()
 
@@ -509,6 +517,10 @@ class IiwaHardwareStationDiagram(Diagram):
                 0.36,
             ]
         )
+        if hemisphere_pos_offset is not None:
+            self.hemisphere_pos = self.hemisphere_pos + np.asarray(
+                hemisphere_pos_offset, dtype=float
+            )
 
         self._use_hardware = use_hardware
         if isinstance(control_mode, str):
@@ -530,6 +542,7 @@ class IiwaHardwareStationDiagram(Diagram):
                 hemisphere_dist=self.hemisphere_dist,
                 hemisphere_angle=self.hemisphere_angle,
                 hemisphere_radius=self.hemisphere_radius,
+                hemisphere_pos_offset=hemisphere_pos_offset,
             ),
         )
         self.internal_scene_graph = self.internal_station.get_scene_graph()

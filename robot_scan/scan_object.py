@@ -22,6 +22,7 @@ Usage:
 import argparse
 import queue
 import threading
+import time
 
 from datetime import datetime
 from enum import Enum, auto
@@ -83,6 +84,7 @@ class State(Enum):
     AWAITING_HEMISPHERE_CONFIRM = auto()
     AWAITING_RRT_CONFIRM = auto()
     MOVING_ALONG_RRT = auto()
+    WAITING_BEFORE_OPTICAL = auto()
     MOVING_DOWN_OPTICAL_AXIS = auto()
     DONE = auto()
 
@@ -107,9 +109,13 @@ def main(
     no_wait: bool = False,
     hemisphere_dist: float = 0.8,
     hemisphere_angle_deg: float = 0.0,
-    hemisphere_radius: float = 0.08,
+    hemisphere_radius: float | None = None,
     hemisphere_z: float = 0.36,
+    hemisphere_pos_override: np.ndarray | None = None,
+    num_scan_points: int = 50,
 ) -> None:
+    if hemisphere_radius is None:
+        hemisphere_radius = 0.08
     cfg = get_config(use_hardware)
     speed_factor = cfg["speed_factor"]
     max_joint_velocities = cfg["max_joint_velocities"]
@@ -146,12 +152,29 @@ def main(
             hemisphere_z,
         ]
     )
+    hemisphere_pos_offset = None
+    if hemisphere_pos_override is not None:
+        default_pos = np.array(
+            [
+                hemisphere_dist * np.cos(hemisphere_angle),
+                hemisphere_dist * np.sin(hemisphere_angle),
+                hemisphere_z,
+            ]
+        )
+        hemisphere_pos = np.asarray(hemisphere_pos_override, dtype=float)
+        hemisphere_pos_offset = hemisphere_pos - default_pos
+        print(
+            colored(
+                f"✓ hemisphere_pos overridden to {hemisphere_pos}  (offset: {hemisphere_pos_offset})",
+                "cyan",
+            )
+        )
     hemisphere_axis = np.array(
         [-np.cos(hemisphere_angle), -np.sin(hemisphere_angle), 0]
     )
 
     # Scan point parameters
-    num_scan_points = 50
+    # num_scan_points passed in as argument
     coverage = 1.0
     distance_along_optical_axis = 0.035
     num_pictures = 30
@@ -160,14 +183,23 @@ def main(
     elbow_angle = np.deg2rad(135)
     # default_position = np.deg2rad([88.65, 45.67, -26.69, -119.89, 9.39, -69.57, 15.66])
 
-    # default_position = np.deg2rad([30, 45.67, -26.69, -119.89, 9.39, -69.57, 15.66])
-    # [-1.10613339  0.91009696  1.33927618 -2.12231034  0.07892622 -0.91535374 2.21462044]
-
-    # For hemisphere_angle = 0
-    # [-1.00163397  0.92805421  1.26446736 -1.9820467   0.07129131 -0.859174182.22506919]
-    # default_position = np.array([-1.00163397, 0.92805421, 1.26446736, -1.9820467, 0.07129131, -0.85917418, 2.22506919])
-    default_position = np.deg2rad(
-        [-32.06, 56.57, 47.46, -115.28, -0.89, -70.31, -37.64]
+    # 1) -63.3787
+    # 2: 52.1514,
+    # 3) 76.7329,
+    # 4) -121.5965,
+    # 5) 4.5253,
+    # 6) -52.4486,
+    # 7) 126.8792
+    default_position = np.array(
+        [
+            -1.10616644,
+            0.91021311,
+            1.3392409,
+            -2.1222599,
+            0.07898072,
+            -0.91539999,
+            2.21445949,
+        ]
     )
 
     r = np.array([0, 0, -1])
@@ -240,6 +272,7 @@ start_idx: {start_idx}
             hemisphere_angle=hemisphere_angle,
             hemisphere_radius=hemisphere_radius,
             use_hardware=use_hardware,
+            hemisphere_pos_offset=hemisphere_pos_offset,
         ),
     )
 
@@ -449,6 +482,7 @@ start_idx: {start_idx}
 
     # Per-scan photo state
     scan_frame_dir = None
+    optical_pause_start_time = 0.0
     optical_halfway_time = 0.0
     capture_traj_times: np.ndarray = np.array([])
     next_capture_idx = 0
@@ -456,6 +490,11 @@ start_idx: {start_idx}
     is_pausing_for_capture = False
     pause_start_sim_time = 0.0
     hold_traj_time = 0.0
+
+    # Timing trackers
+    scan_start_wall_time = None
+    move_durations = []  # trajectory end_time() for each between-scan move
+    optical_axis_traj_time = None  # set once from first optical axis trajectory
 
     # Button click trackers
     num_move_to_scan_clicks = 0
@@ -546,6 +585,7 @@ start_idx: {start_idx}
                 )
                 state = State.WAITING_TO_GO_TO_START
             else:
+                scan_start_wall_time = time.time()
                 trajectory_start_time = simulator.get_context().get_time()
                 state = State.MOVING_TO_START
 
@@ -620,7 +660,10 @@ start_idx: {start_idx}
                     speed_factor,
                     max_joint_velocities,
                 ),
-                kwargs={"save_path": traj_save_path},
+                kwargs={
+                    "save_path": traj_save_path,
+                    "plot_save_dir": scans_base / f"scan{scan_idx:02d}",
+                },
                 daemon=True,
             ).start()
 
@@ -632,7 +675,7 @@ start_idx: {start_idx}
                         station,
                         pose_curr,
                         kinematics_solver,
-                        q_now,
+                        q_array[scan_idx],
                         elbow_angle,
                         optical_axis_ik_result,
                         True,
@@ -668,6 +711,8 @@ start_idx: {start_idx}
             # Set up optical axis + photo state for this scan
             if not skip_opt:
                 optical_axis_trajectory = optical_axis_ik_result["trajectory"]
+                if optical_axis_traj_time is None:
+                    optical_axis_traj_time = optical_axis_trajectory.end_time()
                 optical_halfway_time = optical_axis_trajectory.end_time() / 2.0
                 scan_frame_dir = scans_base / f"scan{scan_idx:02d}"
                 scan_frame_dir.mkdir(parents=True, exist_ok=True)
@@ -828,13 +873,14 @@ start_idx: {start_idx}
                 station,
             )
             if traj_complete:
+                move_durations.append(rrt_result["trajectory"].end_time())
                 curr_idx = scan_idx
                 scan_idx += 1
                 if skip_opt:
                     state = State.WAITING_FOR_NEXT_SCAN
                 else:
-                    trajectory_start_time = simulator.get_context().get_time()
-                    state = State.MOVING_DOWN_OPTICAL_AXIS
+                    optical_pause_start_time = simulator.get_context().get_time()
+                    state = State.WAITING_BEFORE_OPTICAL
 
         # ------------------------------------------------------------------
         elif state == State.MOVING_ALONG_HEMISPHERE:
@@ -845,13 +891,20 @@ start_idx: {start_idx}
                 station,
             )
             if traj_complete:
+                move_durations.append(hemisphere_trajectory.end_time())
                 curr_idx = scan_idx
                 scan_idx += 1
                 if skip_opt:
                     state = State.WAITING_FOR_NEXT_SCAN
                 else:
-                    trajectory_start_time = simulator.get_context().get_time()
-                    state = State.MOVING_DOWN_OPTICAL_AXIS
+                    optical_pause_start_time = simulator.get_context().get_time()
+                    state = State.WAITING_BEFORE_OPTICAL
+
+        # ------------------------------------------------------------------
+        elif state == State.WAITING_BEFORE_OPTICAL:
+            if simulator.get_context().get_time() - optical_pause_start_time >= 2.0:
+                trajectory_start_time = simulator.get_context().get_time()
+                state = State.MOVING_DOWN_OPTICAL_AXIS
 
         # ------------------------------------------------------------------
         elif state == State.MOVING_DOWN_OPTICAL_AXIS:
@@ -933,6 +986,23 @@ start_idx: {start_idx}
 
         # ------------------------------------------------------------------
         elif state == State.DONE:
+            # Append timing data to params file
+            total_run_s = (
+                time.time() - scan_start_wall_time if scan_start_wall_time else 0.0
+            )
+            avg_move_s = float(np.mean(move_durations)) if move_durations else 0.0
+            timing_text = (
+                f"\n# Timing\n"
+                f"total_run_time_s: {total_run_s:.2f}\n"
+                f"num_moves: {len(move_durations)}\n"
+                f"move_times_s: {[round(t, 3) for t in move_durations]}\n"
+                f"avg_move_time_s: {avg_move_s:.3f}\n"
+                f"optical_axis_traj_time_s: {round(optical_axis_traj_time, 3) if optical_axis_traj_time is not None else 'N/A'}\n"
+            )
+            with open(scans_base / "scan_params.txt", "a") as f:
+                f.write(timing_text)
+            print(colored(f"✓ Timing data appended to scan_params.txt", "cyan"))
+
             # Save joint trajectory log
             ctx = simulator.get_context()
             log = state_logger.FindLog(ctx)
@@ -948,6 +1018,52 @@ start_idx: {start_idx}
                 comments="",
             )
             print(colored(f"✓ Joint log saved → {log_path}", "cyan"))
+
+            # Save combined joint positions + velocities plot
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            from matplotlib.figure import Figure
+
+            dt_log = np.diff(t_log)
+            vel_log = np.diff(data_log, axis=1) / dt_log[np.newaxis, :]
+            vel_t_log = t_log[:-1]
+
+            fig = Figure(figsize=(18, 14))
+            FigureCanvasAgg(fig)
+            axes = fig.subplots(7, 2, sharex="col")
+            fig.suptitle(
+                "Joint Log - Positions & Velocities", fontsize=14, fontweight="bold"
+            )
+            for i in range(7):
+                ax_p = axes[i, 0]
+                ax_p.plot(t_log, np.rad2deg(data_log[i]), linewidth=1.0, color="C0")
+                ax_p.set_ylabel(f"J{i+1}\n(deg)", fontsize=8)
+                ax_p.grid(True, alpha=0.3)
+                if i == 0:
+                    ax_p.set_title("Joint Positions", fontsize=11)
+                if i == 6:
+                    ax_p.set_xlabel("Time (s)", fontsize=10)
+
+                ax_v = axes[i, 1]
+                ax_v.plot(vel_t_log, np.rad2deg(vel_log[i]), linewidth=1.0, color="C1")
+                ax_v.set_ylabel("(deg/s)", fontsize=8)
+                ax_v.grid(True, alpha=0.3)
+                if i == 0:
+                    ax_v.set_title("Joint Velocities", fontsize=11)
+                if i == 6:
+                    ax_v.set_xlabel("Time (s)", fontsize=10)
+                if max_joint_velocities is not None:
+                    lim = np.rad2deg(max_joint_velocities[i])
+                    ax_v.axhline(
+                        lim, color="red", linestyle="--", linewidth=1.0, alpha=0.8
+                    )
+                    ax_v.axhline(
+                        -lim, color="red", linestyle="--", linewidth=1.0, alpha=0.8
+                    )
+
+            fig.tight_layout()
+            log_plot_path = outputs_dir / "joint_log.png"
+            fig.savefig(log_plot_path, dpi=150, bbox_inches="tight")
+            print(colored(f"✓ Joint log plot saved → {log_plot_path}", "cyan"))
             break
 
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.01)
@@ -1021,7 +1137,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hemisphere_radius",
         type=float,
-        default=0.08,
+        default=None,
         help="Radius of the hemisphere scan surface in meters (default: 0.08).",
     )
     parser.add_argument(
@@ -1029,6 +1145,20 @@ if __name__ == "__main__":
         type=float,
         default=0.36,
         help="Z height of the hemisphere center in world frame (default: 0.36).",
+    )
+    parser.add_argument(
+        "--hemisphere_pos",
+        type=float,
+        nargs=3,
+        default=None,
+        metavar=("X", "Y", "Z"),
+        help="Directly set hemisphere center position (overrides dist/angle/z).",
+    )
+    parser.add_argument(
+        "--num_scan_points",
+        type=int,
+        default=50,
+        help="Number of hemisphere scan points (default: 50).",
     )
     args = parser.parse_args()
     main(
@@ -1042,4 +1172,6 @@ if __name__ == "__main__":
         hemisphere_angle_deg=args.hemisphere_angle,
         hemisphere_radius=args.hemisphere_radius,
         hemisphere_z=args.hemisphere_z,
+        hemisphere_pos_override=args.hemisphere_pos,
+        num_scan_points=args.num_scan_points,
     )

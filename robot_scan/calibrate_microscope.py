@@ -32,7 +32,17 @@ import matplotlib
 matplotlib.use("Agg")
 import numpy as np
 
-from demo_config import get_config
+from demo_config import (  # Import shared args from here so they stay consistent between scripts
+    CAMERA_SOURCE,
+    COVERAGE,
+    ELBOW_ANGLE,
+    HEMISPHERE_ANGLE_DEG,
+    HEMISPHERE_Z,
+    R_AXIS,
+    T_CAM_TO_TIP,
+    V_AXIS,
+    get_config,
+)
 from manipulation.station import LoadScenario
 from pydrake.all import (
     AddFrameTriadIllustration,
@@ -41,8 +51,6 @@ from pydrake.all import (
     DiagramBuilder,
     MeshcatVisualizer,
     Rgba,
-    RigidTransform,
-    RotationMatrix,
     Simulator,
 )
 from pydrake.systems.primitives import VectorLogSink
@@ -50,6 +58,7 @@ from termcolor import colored
 
 from iiwa_setup.iiwa import IiwaHardwareStationDiagram
 from iiwa_setup.util.visualizations import draw_triad
+from utils.jog import try_jog_tip
 from utils.kuka_geo_kin import KinematicsSolver
 from utils.planning import (
     compute_hemisphere_traj_async,
@@ -110,16 +119,16 @@ def main(
     no_cam: bool = False,
     start_idx: int = 0,
     no_wait: bool = False,
-    live_view: bool = False,
+    live_view: bool = True,
     hemisphere_dist: float = 0.8,
-    hemisphere_angle_deg: float = 0.0,
+    hemisphere_angle_deg: float = HEMISPHERE_ANGLE_DEG,
     hemisphere_radius: float = 0.08,
-    hemisphere_z: float = 0.36,
+    hemisphere_z: float = HEMISPHERE_Z,
     num_scan_points: int = 50,
-    coverage: float = 1.0,
+    coverage: float = COVERAGE,
     corners_h: int = 8,
     corners_w: int = 5,
-    camera_source: int = 4,
+    camera_source: int = CAMERA_SOURCE,
 ) -> None:
     cfg = get_config(use_hardware)
     speed_factor = cfg["speed_factor"]
@@ -159,17 +168,15 @@ def main(
         [-np.cos(hemisphere_angle), -np.sin(hemisphere_angle), 0]
     )
 
-    elbow_angle = np.deg2rad(135)
+    elbow_angle = ELBOW_ANGLE
     default_position = np.deg2rad(
         [-32.06, 56.57, 47.46, -115.28, -0.89, -70.31, -37.64]
     )
 
-    r = np.array([0, 0, -1])
-    v = np.array([0, 1, 0])
+    r = R_AXIS
+    v = V_AXIS
 
-    T_cam_to_tip = RigidTransform(
-        RotationMatrix(np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]))
-    )
+    T_cam_to_tip = T_CAM_TO_TIP
 
     # ==================================================================
     # Outputs setup
@@ -260,6 +267,17 @@ def main(
     meshcat.AddButton("Preview RRT* Raw")
     meshcat.AddButton("Preview RRT* Smooth")
     meshcat.AddButton("Execute Path")
+
+    JOG_BUTTONS = {
+        "Jog +X": np.array([1.0, 0.0, 0.0]),
+        "Jog -X": np.array([-1.0, 0.0, 0.0]),
+        "Jog +Y": np.array([0.0, 1.0, 0.0]),
+        "Jog -Y": np.array([0.0, -1.0, 0.0]),
+        "Jog +Z": np.array([0.0, 0.0, 1.0]),
+        "Jog -Z": np.array([0.0, 0.0, -1.0]),
+    }
+    for name in JOG_BUTTONS:
+        meshcat.AddButton(name)
 
     joint_lower_limits = station.get_internal_plant().GetPositionLowerLimits()
     joint_upper_limits = station.get_internal_plant().GetPositionUpperLimits()
@@ -414,6 +432,19 @@ def main(
     num_preview_raw_clicks = 0
     num_preview_smooth_clicks = 0
     num_execute_clicks = 0
+    jog_click_counts = {name: 0 for name in JOG_BUTTONS}
+
+    MOVING_STATES = {
+        State.COMPUTING_MOVE_TO_START,
+        State.MOVING_TO_START,
+        State.COMPUTING_IKS,
+        State.PLANNING_RRT_FALLBACK,
+        State.COMPUTING_RRT_FALLBACK,
+        State.MOVING_ALONG_HEMISPHERE,
+        State.MOVING_ALONG_RRT,
+    }
+    _jog_target_q: np.ndarray | None = None
+    _at_scan_pose = False
 
     print(colored("\nReady. Press 'Move to Scan' in Meshcat to begin.", "cyan"))
 
@@ -429,6 +460,7 @@ def main(
         internal_plant = station.get_internal_plant()
         internal_plant_context = station.get_internal_plant_context()
         q_now = station.GetOutputPort("iiwa.position_measured").Eval(station_context)
+
         for i in range(7):
             meshcat.SetSliderValue(f"Joint {i+1} (deg)", np.rad2deg(q_now[i]))
 
@@ -441,19 +473,61 @@ def main(
         if R_WR_np is not None:
             meshcat.SetSliderValue("Current PSI (deg)", np.rad2deg(psi_rad))
 
-        # Live camera view (shown every loop iteration when enabled)
+        # Clear jog target once robot has arrived (within 5 mrad on all joints)
+        if _jog_target_q is not None and np.all(np.abs(q_now - _jog_target_q) < 0.005):
+            _jog_target_q = None
+
+        # Live camera view — skip expensive checkerboard detection while moving
         if live_view and not no_cam and _latest_frame_lock is not None:
             with _latest_frame_lock:
                 lf = _latest_frame.copy() if _latest_frame is not None else None
             if lf is not None:
-                annotated, cb_found = _draw_checkerboard(lf, corners_h, corners_w)
-                label = "CORNERS FOUND" if cb_found else "no corners"
-                color = (0, 255, 0) if cb_found else (0, 0, 255)
-                cv2.putText(
-                    annotated, label, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 2
+                skip_cb = (
+                    not _at_scan_pose
+                    or state in MOVING_STATES
+                    or _jog_target_q is not None
                 )
-                cv2.imshow("Live View", annotated)
+                half = (lf.shape[1] // 2, lf.shape[0] // 2)
+                if skip_cb:
+                    cv2.imshow("Live View", cv2.resize(lf, half))
+                else:
+                    annotated, cb_found = _draw_checkerboard(lf, corners_h, corners_w)
+                    label = "CORNERS FOUND" if cb_found else "no corners"
+                    color = (0, 255, 0) if cb_found else (0, 0, 255)
+                    cv2.putText(
+                        annotated,
+                        label,
+                        (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.2,
+                        color,
+                        2,
+                    )
+                    cv2.imshow("Live View", cv2.resize(annotated, half))
                 cv2.waitKey(1)
+
+        # ------------------------------------------------------------------
+        # Jog buttons — process in any non-moving state
+        if state not in MOVING_STATES:
+            for btn_name, direction in JOG_BUTTONS.items():
+                if meshcat.GetButtonClicks(btn_name) > jog_click_counts[btn_name]:
+                    jog_click_counts[btn_name] += 1
+                    q_des = try_jog_tip(
+                        station,
+                        q_now,
+                        direction,
+                        0.001,
+                        kinematics_solver,
+                        elbow_angle,
+                        joint_lower_limits,
+                        joint_upper_limits,
+                    )
+                    if q_des is not None:
+                        station.GetInputPort("iiwa.position").FixValue(
+                            station_context, q_des
+                        )
+                        _jog_target_q = q_des
+                        print(colored(f"  Jogged {btn_name}", "cyan"))
 
         # ------------------------------------------------------------------
         if state == State.WAITING_TO_GO_TO_START:
@@ -516,6 +590,7 @@ def main(
                 print(
                     colored("✓ At first waypoint. Starting calibration scan.", "green")
                 )
+                _at_scan_pose = True
                 state = State.WAITING_FOR_NEXT_SCAN
 
         # ------------------------------------------------------------------
@@ -768,7 +843,13 @@ def main(
                         (255, 255, 255),
                         2,
                     )
-                    cv2.imshow("Capture", annotated)
+                    cv2.imshow(
+                        "Capture",
+                        cv2.resize(
+                            annotated,
+                            (annotated.shape[1] // 2, annotated.shape[0] // 2),
+                        ),
+                    )
                     cv2.waitKey(1)
 
                     # Save raw (unannotated) frame
@@ -826,6 +907,7 @@ def main(
         "Preview RRT* Raw",
         "Preview RRT* Smooth",
         "Execute Path",
+        *JOG_BUTTONS,
     ]:
         meshcat.DeleteButton(btn)
     for i in range(7):
@@ -867,9 +949,9 @@ Examples:
         help="Execute trajectories immediately without waiting for 'Execute Path'.",
     )
     parser.add_argument(
-        "--live_view",
+        "--no_live_view",
         action="store_true",
-        help="Show live camera feed with checkerboard overlay in a window.",
+        help="Disable live camera feed window (live view is on by default).",
     )
     parser.add_argument(
         "--start_idx",
@@ -938,7 +1020,7 @@ Examples:
         no_cam=args.no_cam,
         start_idx=args.start_idx,
         no_wait=args.no_wait,
-        live_view=args.live_view,
+        live_view=not args.no_live_view,
         hemisphere_dist=args.hemisphere_dist,
         hemisphere_angle_deg=args.hemisphere_angle,
         hemisphere_radius=args.hemisphere_radius,

@@ -295,45 +295,81 @@ def plot_hemisphere_trajectory(
     scan_idx,
     joint_lower_limits=None,
     joint_upper_limits=None,
+    max_joint_velocities=None,
+    save_dir=None,
 ):
     """
-    Generate and save hemisphere trajectory plot.
+    Generate and save hemisphere trajectory plot: joint values (left) and velocities (right).
     """
     matplotlib.use("Agg", force=True)
 
-    hemisphere_dir = Path(__file__).parent.parent / "outputs" / "hemisphere_paths"
+    if save_dir is not None:
+        hemisphere_dir = Path(save_dir)
+    else:
+        hemisphere_dir = Path(__file__).parent.parent / "outputs" / "hemisphere_paths"
     hemisphere_dir.mkdir(parents=True, exist_ok=True)
 
     joint_names = [f"Joint {i+1}" for i in range(7)]
 
-    fig = Figure(figsize=(10, 12))
+    # Compute velocities via finite differences
+    dt = np.diff(hemisphere_t)
+    vel_rad = np.diff(trajectory_joint_poses, axis=1) / dt[np.newaxis, :]
+    vel_deg = np.rad2deg(vel_rad)
+    vel_t = hemisphere_t[:-1]  # midpoints (length n-1)
+
+    fig = Figure(figsize=(18, 14))
     FigureCanvasAgg(fig)
-    axes = fig.subplots(7, 1, sharex=True)
+    axes = fig.subplots(7, 2, sharex="col")
     fig.suptitle(
         f"Hemisphere Trajectory - Scan {scan_idx}", fontsize=14, fontweight="bold"
     )
 
     for i in range(7):
+        # ── Left column: joint values ──────────────────────────────────────
+        ax_pos = axes[i, 0]
         data_deg = np.rad2deg(trajectory_joint_poses[i, :])
-        axes[i].plot(hemisphere_t, data_deg, linewidth=1.5, color="C0")
-        axes[i].set_ylabel(f"{joint_names[i]} (deg)", fontsize=10)
-        axes[i].grid(True, alpha=0.3)
+        ax_pos.plot(hemisphere_t, data_deg, linewidth=1.5, color="C0")
+        ax_pos.set_ylim(-180, 180)
+        ax_pos.set_ylabel(f"{joint_names[i]}\n(deg)", fontsize=9)
+        ax_pos.grid(True, alpha=0.3)
+        if i == 0:
+            ax_pos.set_title("Joint Values", fontsize=11)
         if i == 6:
-            axes[i].set_xlabel("Time (s)", fontsize=10)
-        # Draw joint limit lines only if the limit is within the data range
-        data_min, data_max = data_deg.min(), data_deg.max()
+            ax_pos.set_xlabel("Time (s)", fontsize=10)
         if joint_lower_limits is not None:
-            lo_deg = np.rad2deg(joint_lower_limits[i])
-            if data_min <= lo_deg <= data_max:
-                axes[i].axhline(
-                    lo_deg, color="red", linestyle="--", linewidth=1.2, alpha=0.8
-                )
+            ax_pos.axhline(
+                np.rad2deg(joint_lower_limits[i]),
+                color="red",
+                linestyle="--",
+                linewidth=1.2,
+                alpha=0.8,
+            )
         if joint_upper_limits is not None:
-            hi_deg = np.rad2deg(joint_upper_limits[i])
-            if data_min <= hi_deg <= data_max:
-                axes[i].axhline(
-                    hi_deg, color="red", linestyle="--", linewidth=1.2, alpha=0.8
-                )
+            ax_pos.axhline(
+                np.rad2deg(joint_upper_limits[i]),
+                color="red",
+                linestyle="--",
+                linewidth=1.2,
+                alpha=0.8,
+            )
+
+        # ── Right column: joint velocities ─────────────────────────────────
+        ax_vel = axes[i, 1]
+        ax_vel.plot(vel_t, vel_deg[i], linewidth=1.5, color="C1")
+        ax_vel.set_ylabel("(deg/s)", fontsize=9)
+        ax_vel.grid(True, alpha=0.3)
+        if i == 0:
+            ax_vel.set_title("Joint Velocities", fontsize=11)
+        if i == 6:
+            ax_vel.set_xlabel("Time (s)", fontsize=10)
+        if max_joint_velocities is not None:
+            lim_deg = np.rad2deg(max_joint_velocities[i])
+            ax_vel.axhline(
+                lim_deg, color="red", linestyle="--", linewidth=1.2, alpha=0.8
+            )
+            ax_vel.axhline(
+                -lim_deg, color="red", linestyle="--", linewidth=1.2, alpha=0.8
+            )
 
     fig.tight_layout()
     hemisphere_path = hemisphere_dir / f"scan_{scan_idx:02d}.png"
@@ -401,6 +437,7 @@ def save_trajectory_plots(
     scan_idx,
     joint_lower_limits=None,
     joint_upper_limits=None,
+    max_joint_velocities=None,
 ):
     """
     Save hemisphere and optical axis trajectory plots to separate files.
@@ -411,6 +448,7 @@ def save_trajectory_plots(
         scan_idx,
         joint_lower_limits,
         joint_upper_limits,
+        max_joint_velocities=max_joint_velocities,
     )
     plot_optical_axis_trajectory(
         optical_traj,

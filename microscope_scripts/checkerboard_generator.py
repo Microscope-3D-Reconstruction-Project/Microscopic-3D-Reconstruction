@@ -8,9 +8,7 @@ import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 
 
-def generate_checkerboard_pdf(
-    square_size_mm, rows=6, cols=9, output_filename="checkerboard.pdf"
-):
+def generate_checkerboard_pdf(square_size_mm, rows=6, cols=9):
     """
     Generate a checkerboard pattern PDF for camera calibration.
 
@@ -20,79 +18,70 @@ def generate_checkerboard_pdf(
         cols: Number of internal corners horizontally (default 9 for 7x10 board)
         output_filename: Output PDF filename
     """
-    # A4 paper dimensions in mm
-    A4_WIDTH_MM = 210
-    A4_HEIGHT_MM = 297
+    # US Letter paper dimensions in mm (8.5 x 11 in)
+    PAPER_WIDTH_MM = 215.9
+    PAPER_HEIGHT_MM = 279.4
 
     # Calculate checkerboard dimensions
     # We need rows+1 and cols+1 squares for the specified internal corners
     board_width_mm = (cols + 1) * square_size_mm
     board_height_mm = (rows + 1) * square_size_mm
 
-    # Check if checkerboard fits on A4 paper
-    if board_width_mm > A4_WIDTH_MM or board_height_mm > A4_HEIGHT_MM:
+    # Check if checkerboard fits on Letter paper
+    if board_width_mm > PAPER_WIDTH_MM or board_height_mm > PAPER_HEIGHT_MM:
         print(
-            f"Warning: Checkerboard ({board_width_mm}x{board_height_mm} mm) is larger than A4 paper ({A4_WIDTH_MM}x{A4_HEIGHT_MM} mm)"
+            f"Warning: Checkerboard ({board_width_mm}x{board_height_mm} mm) is larger than Letter paper ({PAPER_WIDTH_MM}x{PAPER_HEIGHT_MM} mm)"
         )
         print("Consider using a smaller square size.")
         return False
 
-    # Convert mm to inches (matplotlib uses inches)
+    # Convert mm to inches — figure size in inches maps 1:1 to PDF points (1 in = 72 pts).
     MM_TO_INCH = 1 / 25.4
-    A4_WIDTH_INCH = A4_WIDTH_MM * MM_TO_INCH
-    A4_HEIGHT_INCH = A4_HEIGHT_MM * MM_TO_INCH
-    square_size_inch = square_size_mm * MM_TO_INCH
+    PAPER_WIDTH_INCH = PAPER_WIDTH_MM * MM_TO_INCH
+    PAPER_HEIGHT_INCH = PAPER_HEIGHT_MM * MM_TO_INCH
 
-    # Create figure with exact A4 dimensions
-    fig = plt.figure(figsize=(A4_WIDTH_INCH, A4_HEIGHT_INCH))
-    ax = fig.add_subplot(111, aspect="equal")
+    # Create figure with exact Letter dimensions. No axes — draw directly in figure
+    # coordinates so physical size is tied only to the figure's inch-size.
+    fig = plt.figure(figsize=(PAPER_WIDTH_INCH, PAPER_HEIGHT_INCH))
 
     # Center the checkerboard on the page
-    offset_x = (A4_WIDTH_MM - board_width_mm) / 2
-    offset_y = (A4_HEIGHT_MM - board_height_mm) / 2
+    offset_x_mm = (PAPER_WIDTH_MM - board_width_mm) / 2
+    offset_y_mm = (PAPER_HEIGHT_MM - board_height_mm) / 2
 
-    # Draw checkerboard pattern
+    # Draw checkerboard pattern in figure-fraction coordinates
     for row in range(rows + 1):
         for col in range(cols + 1):
-            # Alternate black and white squares
-            if (row + col) % 2 == 0:
-                color = "black"
-            else:
-                color = "white"
+            color = "black" if (row + col) % 2 == 0 else "white"
 
-            # Calculate position in mm, then convert to inches
-            x_mm = offset_x + col * square_size_mm
-            y_mm = offset_y + (rows - row) * square_size_mm  # Flip y-axis
-            x_inch = x_mm * MM_TO_INCH
-            y_inch = y_mm * MM_TO_INCH
+            x_mm = offset_x_mm + col * square_size_mm
+            y_mm = offset_y_mm + (rows - row) * square_size_mm  # Flip y-axis
 
-            # Draw square
+            x_frac = x_mm / PAPER_WIDTH_MM
+            y_frac = y_mm / PAPER_HEIGHT_MM
+            w_frac = square_size_mm / PAPER_WIDTH_MM
+            h_frac = square_size_mm / PAPER_HEIGHT_MM
+
             rect = patches.Rectangle(
-                (x_inch, y_inch),
-                square_size_inch,
-                square_size_inch,
+                (x_frac, y_frac),
+                w_frac,
+                h_frac,
                 linewidth=0,
                 edgecolor="none",
                 facecolor=color,
+                transform=fig.transFigure,
             )
-            ax.add_patch(rect)
+            fig.add_artist(rect)
 
-    # Set axis limits to A4 dimensions
-    ax.set_xlim(0, A4_WIDTH_INCH)
-    ax.set_ylim(0, A4_HEIGHT_INCH)
-    ax.axis("off")
-
-    # Remove margins
-    plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
-
-    # Create outputs directory if it doesn't exist
-    outputs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs")
-    os.makedirs(outputs_dir, exist_ok=True)
-    output_path = os.path.join(outputs_dir, output_filename)
+    checkerboards_dir = os.path.join(
+        os.path.dirname(__file__), "calibration_data", "checkerboards"
+    )
+    os.makedirs(checkerboards_dir, exist_ok=True)
+    output_filename = f"checkerboard_{int(square_size_mm)}mm_{rows}rows_{cols}cols.pdf"
+    output_path = os.path.join(checkerboards_dir, output_filename)
 
     # Save as PDF
     with PdfPages(output_path) as pdf:
-        pdf.savefig(fig, bbox_inches="tight", pad_inches=0, dpi=300)
+        pdf.savefig(fig)
 
     plt.close()
 
@@ -102,8 +91,8 @@ def generate_checkerboard_pdf(
     print(f"  Square size: {square_size_mm} mm")
     print(f"  Board dimensions: {board_width_mm} x {board_height_mm} mm")
     print(f"\nPrint settings:")
-    print(f"  - Print on A4 paper")
-    print(f"  - Scale: 100% (NO SCALING)")
+    print(f"  - Print on US Letter paper (8.5 x 11 in)")
+    print(f"  - Scale: 100% (NO SCALING / Actual Size)")
     print(f"  - Page orientation: Portrait")
 
     return True
@@ -138,16 +127,9 @@ Examples:
         default=9,
         help="Number of internal corner columns (default: 9, creates 7x10 board)",
     )
-    parser.add_argument(
-        "--output",
-        type=str,
-        default="checkerboard.pdf",
-        help="Output PDF filename (default: checkerboard.pdf)",
-    )
-
     args = parser.parse_args()
 
-    generate_checkerboard_pdf(args.size, args.rows, args.cols, args.output)
+    generate_checkerboard_pdf(args.size, args.rows, args.cols)
 
 
 if __name__ == "__main__":

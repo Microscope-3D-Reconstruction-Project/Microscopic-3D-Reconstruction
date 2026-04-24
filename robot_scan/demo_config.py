@@ -1,5 +1,7 @@
 import numpy as np
 
+from pydrake.all import RigidTransform, RotationMatrix
+
 # Configuration for different modes
 HARDWARE_CONFIG = {
     "speed_factor": 1.0,
@@ -21,3 +23,47 @@ def get_config(use_hardware: bool):
     # Convert deg/s to rad/s for velocity limits
     cfg["max_joint_velocities"] = np.deg2rad(cfg["max_joint_velocity_deg"] * np.ones(7))
     return cfg
+
+
+# ===========================================================================
+# Shared scan parameters (used across scan_object, localize_scan_object,
+# calibrate_microscope, and related demos)
+# ===========================================================================
+
+# Robot configuration
+ELBOW_ANGLE_DEG = 135.0
+ELBOW_ANGLE = np.deg2rad(ELBOW_ANGLE_DEG)
+
+# Kinematic solver reference axes
+R_AXIS = np.array([0, 0, -1])
+V_AXIS = np.array([0, 1, 0])
+
+# Camera-to-tip rigid transform (constant across all demos)
+T_CAM_TO_TIP = RigidTransform(
+    RotationMatrix(np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]))
+)
+
+# Default robot starting joint configuration (scan_object + localize_scan_object)
+# deg: [-63.38, 52.15, 76.73, -121.60, 4.53, -52.45, 126.88]
+DEFAULT_POSITION = np.array(
+    [
+        -1.10616644,
+        0.91021311,
+        1.3392409,
+        -2.1222599,
+        0.07898072,
+        -0.91539999,
+        2.21445949,
+    ]
+)
+
+# Hemisphere defaults
+HEMISPHERE_DIST = 0.8
+HEMISPHERE_RADIUS = 0.08
+HEMISPHERE_CENTER = np.array([0.761285, -0.002479, 0.363935])
+HEMISPHERE_Z = HEMISPHERE_CENTER[2]
+HEMISPHERE_ANGLE_DEG = 0.0
+COVERAGE = 1.0
+
+# Camera
+CAMERA_SOURCE = 4

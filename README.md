@@ -207,6 +207,34 @@ python robot_scan/scan_object.py --start_idx 10 --no_wait
 
 ---
 
+## Generate Calibration Board (`microscope_scripts/checkerboard_generator.py`)
+
+Generates a printable US Letter (8.5 × 11 in) PDF checkerboard pattern for use with camera calibration. Square size and corner count are configurable. Print at 100% scale (no scaling / Actual Size) on Letter paper.
+
+### Arguments
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--size` | yes | — | Size of each square in mm (e.g. `25`) |
+| `--rows` | no | `6` | Internal corner rows (board has `rows+1` squares tall) |
+| `--cols` | no | `9` | Internal corner columns (board has `cols+1` squares wide) |
+Output is always saved to `microscope_scripts/calibration_data/checkerboards/checkerboard_<size>mm_<rows>rows_<cols>cols.pdf`.
+
+> **Note:** `--rows`/`--cols` are *internal corners*, not squares. A 6×9 corner board has 7×10 squares.
+
+### Examples
+
+```bash
+# 25 mm squares, default 6×9 internal corners
+python microscope_scripts/checkerboard_generator.py --size 25
+
+# Smaller squares, more corners
+python microscope_scripts/checkerboard_generator.py --size 15 --rows 8 --cols 11
+
+```
+
+---
+
 ## Camera Calibration (`microscope_scripts/camera_calibration.py`)
 
 Computes intrinsic camera parameters (matrix + distortion) from checkerboard images saved to disk and writes `camera_calib_intrinsic.npy` into the same folder as the input images.

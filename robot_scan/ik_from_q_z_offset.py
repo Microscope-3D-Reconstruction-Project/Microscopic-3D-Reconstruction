@@ -45,12 +45,12 @@ from utils.kuka_geo_kin import KinematicsSolver
 #     ]
 # )
 
-# [ -30.18   59.88   47.46 -105.11   -1.3   -63.52  -39.02]
-q = np.deg2rad([-30.18, 59.88, 47.46, -105.11, -1.3, -63.52, -39.02])
+# [ -32.36   57.61   48.1  -113.56   -1.26  -69.08  -38.5 ]
+q = np.deg2rad([-32.36, 57.61, 48.1, -113.56, -1.26, -69.08, -38.5])
 
 # Z-offset in the microscope tip link's local frame (meters)
 # Positive = along tip-frame +z, negative = along tip-frame -z
-z_offset_m = 0.05
+z_offset_m = 0.03
 
 # Elbow angle for IK (radians)
 elbow_angle = np.deg2rad(135)
