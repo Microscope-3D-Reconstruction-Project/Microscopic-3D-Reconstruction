@@ -96,7 +96,8 @@ Creating the Python Environment:
 cd reconstruction
 uv sync
 # Installing the colmap python bindings
-cd ../colmap && uv pip install .
+export pybind11_DIR="$(python -m pybind11 --cmakedir)"
+cd ../colmap && uv pip install . --no-build-isolation
 ```
 
 For local Drake and manipulation installations, insert the following at the end of the

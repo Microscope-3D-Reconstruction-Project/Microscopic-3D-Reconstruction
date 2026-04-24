@@ -13,7 +13,6 @@ dependencies = [
     "nerfview>=0.1.2",
     "opencv-python>=4.13.0.92",
     "pillow>=12.2.0",
-    "pycolmap",
     "pyyaml>=6.0.3",
     "scikit-learn>=1.7.2",
     "splines>=0.3.3",
@@ -27,6 +26,24 @@ dependencies = [
     "omegaconf>=2.3.0",
     "tyro>=0.8.8",
     "viser>=1.0.26",
+    "pybind11>=3.0.4",
+    "pybind11-stubgen>=2.5.5",
+    "ruff>=0.15.11",
+    "einops>=0.8.2",
+    "huggingface-hub>=1.11.0",
+    "safetensors>=0.7.0",
+    "scikit-build-core>=0.12.2",
+    "timm>=1.0.26",
+    "transformers>=5.6.2",
+    "tokenizers>=0.22.2",
+    "plotly>=6.7.0",
+    "hf-xet>=1.4.3",
+    "regex>=2026.4.4",
+]
+
+[project.optional-dependencies]
+colmap = [
+    "pycolmap",
 ]
 
 [tool.uv.sources]
