@@ -89,6 +89,7 @@ class State(Enum):
     COMPUTING_RRT_FALLBACK = auto()
     AWAITING_RRT_CONFIRM = auto()
     MOVING_ALONG_RRT = auto()
+    REVERTING_TO_SCAN_POSE = auto()
     CAPTURING = auto()
     DONE = auto()
 
@@ -442,8 +443,12 @@ def main(
         State.COMPUTING_RRT_FALLBACK,
         State.MOVING_ALONG_HEMISPHERE,
         State.MOVING_ALONG_RRT,
+        State.REVERTING_TO_SCAN_POSE,
     }
     _jog_target_q: np.ndarray | None = None
+    _q_at_scan: np.ndarray | None = None
+    _pending_traj_type: str = ""
+    _manual_save_count = 0
     _at_scan_pose = False
 
     print(colored("\nReady. Press 'Move to Scan' in Meshcat to begin.", "cyan"))
@@ -490,9 +495,12 @@ def main(
                 half = (lf.shape[1] // 2, lf.shape[0] // 2)
                 if skip_cb:
                     cv2.imshow("Live View", cv2.resize(lf, half))
+                    cv2.waitKey(1)
                 else:
                     annotated, cb_found = _draw_checkerboard(lf, corners_h, corners_w)
-                    label = "CORNERS FOUND" if cb_found else "no corners"
+                    label = (
+                        "CORNERS FOUND — press S to save" if cb_found else "no corners"
+                    )
                     color = (0, 255, 0) if cb_found else (0, 0, 255)
                     cv2.putText(
                         annotated,
@@ -504,7 +512,12 @@ def main(
                         2,
                     )
                     cv2.imshow("Live View", cv2.resize(annotated, half))
-                cv2.waitKey(1)
+                    key = cv2.waitKey(1) & 0xFF
+                    if cb_found and key == ord("s"):
+                        frame_path = calib_dir / f"manual_{_manual_save_count:05d}.jpg"
+                        _frame_queue.put((lf, str(frame_path)))
+                        _manual_save_count += 1
+                        print(colored(f"  📷 Manual save → {frame_path}", "green"))
 
         # ------------------------------------------------------------------
         # Jog buttons — process in any non-moving state
@@ -697,9 +710,24 @@ def main(
             execute = meshcat.GetButtonClicks("Execute Path") > num_execute_clicks
             if execute:
                 num_execute_clicks += 1
-                trajectory_start_time = simulator.get_context().get_time()
-                print(colored("  Executing hemisphere trajectory...", "green"))
-                state = State.MOVING_ALONG_HEMISPHERE
+                if _q_at_scan is not None and np.any(
+                    np.abs(q_now - _q_at_scan) > 0.005
+                ):
+                    print(
+                        colored(
+                            "  Robot was jogged — reverting to scan pose first...",
+                            "cyan",
+                        )
+                    )
+                    station.GetInputPort("iiwa.position").FixValue(
+                        station_context, _q_at_scan
+                    )
+                    _pending_traj_type = "hemisphere"
+                    state = State.REVERTING_TO_SCAN_POSE
+                else:
+                    trajectory_start_time = simulator.get_context().get_time()
+                    print(colored("  Executing hemisphere trajectory...", "green"))
+                    state = State.MOVING_ALONG_HEMISPHERE
 
         # ------------------------------------------------------------------
         elif state == State.PLANNING_RRT_FALLBACK:
@@ -787,9 +815,24 @@ def main(
                 print(colored("  ✓ Smooth preview done.", "cyan"))
             elif execute:
                 num_execute_clicks += 1
-                trajectory_start_time = simulator.get_context().get_time()
-                print(colored("  Executing RRT* trajectory...", "green"))
-                state = State.MOVING_ALONG_RRT
+                if _q_at_scan is not None and np.any(
+                    np.abs(q_now - _q_at_scan) > 0.005
+                ):
+                    print(
+                        colored(
+                            "  Robot was jogged — reverting to scan pose first...",
+                            "cyan",
+                        )
+                    )
+                    station.GetInputPort("iiwa.position").FixValue(
+                        station_context, _q_at_scan
+                    )
+                    _pending_traj_type = "rrt"
+                    state = State.REVERTING_TO_SCAN_POSE
+                else:
+                    trajectory_start_time = simulator.get_context().get_time()
+                    print(colored("  Executing RRT* trajectory...", "green"))
+                    state = State.MOVING_ALONG_RRT
 
         # ------------------------------------------------------------------
         elif state == State.MOVING_ALONG_RRT:
@@ -797,6 +840,7 @@ def main(
                 rrt_result["trajectory"], trajectory_start_time, simulator, station
             )
             if traj_complete:
+                _q_at_scan = q_now.copy()
                 curr_idx = scan_idx
                 state = State.CAPTURING
 
@@ -806,8 +850,23 @@ def main(
                 hemisphere_trajectory, trajectory_start_time, simulator, station
             )
             if traj_complete:
+                _q_at_scan = q_now.copy()
                 curr_idx = scan_idx
                 state = State.CAPTURING
+
+        # ------------------------------------------------------------------
+        elif state == State.REVERTING_TO_SCAN_POSE:
+            station.GetInputPort("iiwa.position").FixValue(station_context, _q_at_scan)
+            if np.all(np.abs(q_now - _q_at_scan) < 0.01):
+                print(
+                    colored("  ✓ Back at scan pose. Executing trajectory...", "green")
+                )
+                trajectory_start_time = simulator.get_context().get_time()
+                state = (
+                    State.MOVING_ALONG_HEMISPHERE
+                    if _pending_traj_type == "hemisphere"
+                    else State.MOVING_ALONG_RRT
+                )
 
         # ------------------------------------------------------------------
         elif state == State.CAPTURING:
