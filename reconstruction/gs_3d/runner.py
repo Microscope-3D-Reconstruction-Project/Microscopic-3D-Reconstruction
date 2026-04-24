@@ -489,6 +489,14 @@ class Runner:
         )
         loss = torch.lerp(l1loss, ssimloss, cfg.ssim_lambda)
 
+        if masks is not None and cfg.bg_alpha_loss:
+            bg_alpha_loss = alphas[~masks].mean()
+            loss = loss + (
+                bg_alpha_loss * cfg.bg_alpha_lambda
+                if cfg.bg_alpha_lambda > 0.0
+                else 0.0
+            )
+
         depthloss = tvloss = None
         if cfg.depth_loss and points is not None and depths_gt is not None:
             pts = torch.stack(
@@ -677,7 +685,7 @@ class Runner:
                 )
 
             # ── Evaluation ────────────────────────────────────────────────
-            if step in eval_at:
+            if step in eval_at or step == max_steps - 1:
                 self.evaluator.eval(step)
                 self.evaluator.render_traj(step)
                 if cfg.compression is not None:

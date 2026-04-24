@@ -108,9 +108,9 @@ class Evaluator:
         valloader = torch.utils.data.DataLoader(
             self.valset, batch_size=1, shuffle=False, num_workers=1
         )
-        ellipse_time = 0.0
-        metrics = defaultdict(list)
 
+        ellipse_time = 0
+        metrics = defaultdict(list)
         for i, data in enumerate(valloader):
             camtoworlds = data["camtoworld"].to(device)
             Ks = data["K"].to(device)
@@ -129,35 +129,33 @@ class Evaluator:
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
                 masks=masks,
-            )
+            )  # [1, H, W, 3]
             torch.cuda.synchronize()
             ellipse_time += max(time.time() - tic, 1e-10)
+
             colors = torch.clamp(colors, 0.0, 1.0)
-            colors_eval, pixels_eval = _apply_eval_mask(colors, pixels, masks)
+            canvas_list = [pixels, colors]
 
             if self.world_rank == 0:
-                canvas = (
-                    torch.cat([pixels_eval, colors_eval], dim=2)
-                    .squeeze(0)
-                    .cpu()
-                    .numpy()
-                )
+                # write images
+                canvas = torch.cat(canvas_list, dim=2).squeeze(0).cpu().numpy()
+                canvas = (canvas * 255).astype(np.uint8)
                 imageio.imwrite(
                     f"{self.render_dir}/{stage}_step{step}_{i:04d}.png",
-                    (canvas * 255).astype(np.uint8),
+                    canvas,
                 )
-                pixels_p = pixels_eval.permute(0, 3, 1, 2)
-                colors_p = colors_eval.permute(0, 3, 1, 2)
+
+                pixels_p = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                colors_p = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
                 metrics["psnr"].append(self.psnr(colors_p, pixels_p))
                 metrics["ssim"].append(self.ssim(colors_p, pixels_p))
                 metrics["lpips"].append(self.lpips(colors_p, pixels_p))
-                if cfg.use_bilateral_grid and self.color_correct is not None:
-                    cc = self.color_correct(colors, pixels)
-                    cc, _ = _apply_eval_mask(cc, pixels, masks)
-                    cc_p = cc.permute(0, 3, 1, 2)
-                    metrics["cc_psnr"].append(self.psnr(cc_p, pixels_p))
-                    metrics["cc_ssim"].append(self.ssim(cc_p, pixels_p))
-                    metrics["cc_lpips"].append(self.lpips(cc_p, pixels_p))
+                if cfg.use_bilateral_grid:
+                    cc_colors = self.color_correct(colors, pixels)
+                    cc_colors_p = cc_colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                    metrics["cc_psnr"].append(self.psnr(cc_colors_p, pixels_p))
+                    metrics["cc_ssim"].append(self.ssim(cc_colors_p, pixels_p))
+                    metrics["cc_lpips"].append(self.lpips(cc_colors_p, pixels_p))
 
         if self.world_rank == 0:
             ellipse_time /= len(valloader)

@@ -103,6 +103,10 @@ class Config:
     depth_loss: bool = False
     depth_lambda: float = 1e-2
 
+    #  Background Alpha Loss (drives background Gaussians to be transparent, only works if masks are provided)
+    bg_alpha_loss: bool = True
+    bg_alpha_lambda: float = 0.5
+
     # ── Tensorboard ───────────────────────────────────────────────────────────
     tb_every: int = 100
     tb_save_image: bool = False

@@ -112,6 +112,10 @@ bilateral_grid_shape: [16, 16, 8]
 depth_loss: false
 depth_lambda: 0.01
 
+# ── Background Alpha Loss ─────────────────────────────────────────────────────
+bg_alpha_loss: true
+bg_alpha_lambda: 0.5
+
 # ── Tensorboard ────────────────────────────────────────────────────────────────
 tb_every: 100
 tb_save_image: false
