@@ -35,8 +35,10 @@ import numpy as np
 from demo_config import (  # Import shared args from here so they stay consistent between scripts
     CAMERA_SOURCE,
     COVERAGE,
+    DEFAULT_POSITION,
     ELBOW_ANGLE,
     HEMISPHERE_ANGLE_DEG,
+    HEMISPHERE_CENTER,
     HEMISPHERE_Z,
     R_AXIS,
     T_CAM_TO_TIP,
@@ -91,6 +93,8 @@ class State(Enum):
     MOVING_ALONG_RRT = auto()
     REVERTING_TO_SCAN_POSE = auto()
     CAPTURING = auto()
+    COMPUTING_RESET = auto()
+    RESETTING = auto()
     DONE = auto()
 
 
@@ -125,6 +129,7 @@ def main(
     hemisphere_angle_deg: float = HEMISPHERE_ANGLE_DEG,
     hemisphere_radius: float = 0.08,
     hemisphere_z: float = HEMISPHERE_Z,
+    hemisphere_pos_override: np.ndarray | None = HEMISPHERE_CENTER,
     num_scan_points: int = 50,
     coverage: float = COVERAGE,
     corners_h: int = 8,
@@ -136,6 +141,44 @@ def main(
     max_joint_velocities = cfg["max_joint_velocities"]
     vel_limits = cfg["vel_limits"]
     acc_limits = cfg["acc_limits"]
+
+    elbow_angle = ELBOW_ANGLE
+    # default_position = np.deg2rad(
+    #     [-32.06, 56.57, 47.46, -115.28, -0.89, -70.31, -37.64]
+    # )
+
+    default_position = DEFAULT_POSITION
+
+    r = R_AXIS
+    v = V_AXIS
+
+    T_cam_to_tip = T_CAM_TO_TIP
+
+    print(colored("=" * 60, "cyan"))
+    print(colored("  calibrate_microscope — configuration", "cyan"))
+    print(colored("=" * 60, "cyan"))
+    print(colored("  Args:", "white"))
+    print(f"    use_hardware         : {use_hardware}")
+    print(f"    no_cam               : {no_cam}")
+    print(f"    start_idx            : {start_idx}")
+    print(f"    no_wait              : {no_wait}")
+    print(f"    live_view            : {live_view}")
+    print(f"    hemisphere_dist      : {hemisphere_dist}")
+    print(f"    hemisphere_angle_deg : {hemisphere_angle_deg}")
+    print(f"    hemisphere_radius    : {hemisphere_radius}")
+    print(f"    hemisphere_z         : {hemisphere_z}")
+    print(f"    hemisphere_pos_override: {hemisphere_pos_override}")
+    print(f"    num_scan_points      : {num_scan_points}")
+    print(f"    coverage             : {coverage}")
+    print(f"    corners_h            : {corners_h}")
+    print(f"    corners_w            : {corners_w}")
+    print(f"    camera_source        : {camera_source}")
+    print(colored("  Config:", "white"))
+    print(f"    speed_factor         : {speed_factor}")
+    print(f"    max_joint_vel (deg/s): {np.rad2deg(max_joint_velocities).round(2)}")
+    print(f"    vel_limits  (rad/s)  : {vel_limits.round(3)}")
+    print(f"    acc_limits  (rad/s²) : {acc_limits.round(3)}")
+    print(colored("=" * 60, "cyan"))
 
     scenario_data = """
     directives:
@@ -165,19 +208,12 @@ def main(
             hemisphere_z,
         ]
     )
+    if hemisphere_pos_override is not None:
+        hemisphere_pos = np.asarray(hemisphere_pos_override, dtype=float)
+        print(colored(f"✓ hemisphere_pos overridden to {hemisphere_pos}", "cyan"))
     hemisphere_axis = np.array(
         [-np.cos(hemisphere_angle), -np.sin(hemisphere_angle), 0]
     )
-
-    elbow_angle = ELBOW_ANGLE
-    default_position = np.deg2rad(
-        [-32.06, 56.57, 47.46, -115.28, -0.89, -70.31, -37.64]
-    )
-
-    r = R_AXIS
-    v = V_AXIS
-
-    T_cam_to_tip = T_CAM_TO_TIP
 
     # ==================================================================
     # Outputs setup
@@ -220,8 +256,7 @@ def main(
         "station",
         IiwaHardwareStationDiagram(
             scenario=scenario,
-            hemisphere_dist=hemisphere_dist,
-            hemisphere_angle=hemisphere_angle,
+            hemisphere_pos=hemisphere_pos,
             hemisphere_radius=hemisphere_radius,
             use_hardware=use_hardware,
         ),
@@ -264,18 +299,18 @@ def main(
     # Buttons + sliders
     # ==================================================================
     meshcat.AddButton("Stop Simulation")
-    meshcat.AddButton("Move to Scan")
+    meshcat.AddButton("Move to Next")
     meshcat.AddButton("Preview RRT* Raw")
     meshcat.AddButton("Preview RRT* Smooth")
-    meshcat.AddButton("Execute Path")
+    meshcat.AddButton("Reset")
 
     JOG_BUTTONS = {
-        "Jog +X": np.array([1.0, 0.0, 0.0]),
-        "Jog -X": np.array([-1.0, 0.0, 0.0]),
-        "Jog +Y": np.array([0.0, 1.0, 0.0]),
-        "Jog -Y": np.array([0.0, -1.0, 0.0]),
-        "Jog +Z": np.array([0.0, 0.0, 1.0]),
-        "Jog -Z": np.array([0.0, 0.0, -1.0]),
+        "Jog Right (camera frame)": np.array([1.0, 0.0, 0.0]),
+        "Jog Left (camera frame)": np.array([-1.0, 0.0, 0.0]),
+        "Jog Down (camera frame)": np.array([0.0, 1.0, 0.0]),
+        "Jog Up (camera frame)": np.array([0.0, -1.0, 0.0]),
+        "Jog Forward (camera frame)": np.array([0.0, 0.0, 1.0]),
+        "Jog Backward (camera frame)": np.array([0.0, 0.0, -1.0]),
     }
     for name in JOG_BUTTONS:
         meshcat.AddButton(name)
@@ -426,13 +461,14 @@ def main(
         "trajectory": None,
     }
     rrt_result = {"ready": False, "success": False, "trajectory": None, "path": None}
+    reset_result = {"ready": False, "success": False, "trajectory": None, "path": None}
 
     hemisphere_trajectory = None
 
-    num_move_to_scan_clicks = 0
+    num_move_to_next_clicks = 0
     num_preview_raw_clicks = 0
     num_preview_smooth_clicks = 0
-    num_execute_clicks = 0
+    num_reset_clicks = 0
     jog_click_counts = {name: 0 for name in JOG_BUTTONS}
 
     MOVING_STATES = {
@@ -444,6 +480,8 @@ def main(
         State.MOVING_ALONG_HEMISPHERE,
         State.MOVING_ALONG_RRT,
         State.REVERTING_TO_SCAN_POSE,
+        State.COMPUTING_RESET,
+        State.RESETTING,
     }
     _jog_target_q: np.ndarray | None = None
     _q_at_scan: np.ndarray | None = None
@@ -451,7 +489,7 @@ def main(
     _manual_save_count = 0
     _at_scan_pose = False
 
-    print(colored("\nReady. Press 'Move to Scan' in Meshcat to begin.", "cyan"))
+    print(colored("\nReady. Press 'Move to Next' in Meshcat to begin.", "cyan"))
 
     # ==================================================================
     # Main simulation loop
@@ -540,14 +578,35 @@ def main(
                             station_context, q_des
                         )
                         _jog_target_q = q_des
-                        print(colored(f"  Jogged {btn_name}", "cyan"))
+                        print(colored(f"  Jogged {btn_name[4:]}", "cyan"))
+
+        # Reset button — available from any non-moving state
+        if state not in MOVING_STATES:
+            if meshcat.GetButtonClicks("Reset") > num_reset_clicks:
+                num_reset_clicks += 1
+                print(colored("Planning RRT* reset to default_position...", "cyan"))
+                reset_result["ready"] = False
+                reset_result["success"] = False
+                threading.Thread(
+                    target=plan_rrt_star_async,
+                    args=(
+                        station,
+                        q_now,
+                        default_position,
+                        vel_limits,
+                        acc_limits,
+                        reset_result,
+                    ),
+                    daemon=True,
+                ).start()
+                state = State.COMPUTING_RESET
 
         # ------------------------------------------------------------------
         if state == State.WAITING_TO_GO_TO_START:
-            if meshcat.GetButtonClicks("Move to Scan") <= num_move_to_scan_clicks:
+            if meshcat.GetButtonClicks("Move to Next") <= num_move_to_next_clicks:
                 simulator.AdvanceTo(simulator.get_context().get_time() + 0.01)
                 continue
-            num_move_to_scan_clicks += 1
+            num_move_to_next_clicks += 1
 
             first_valid = next(
                 (i for i in range(n) if not np.isnan(q_array[i]).any()), None
@@ -688,7 +747,7 @@ def main(
                     print(
                         colored(
                             f"  ✓ Hemisphere trajectory ready for waypoint {scan_idx}.\n"
-                            "    Press 'Execute Path' to run it.",
+                            "    Press 'Move to Next' to run it.",
                             "green",
                         )
                     )
@@ -707,9 +766,9 @@ def main(
 
         # ------------------------------------------------------------------
         elif state == State.AWAITING_HEMISPHERE_CONFIRM:
-            execute = meshcat.GetButtonClicks("Execute Path") > num_execute_clicks
+            execute = meshcat.GetButtonClicks("Move to Next") > num_move_to_next_clicks
             if execute:
-                num_execute_clicks += 1
+                num_move_to_next_clicks += 1
                 if _q_at_scan is not None and np.any(
                     np.abs(q_now - _q_at_scan) > 0.005
                 ):
@@ -779,7 +838,7 @@ def main(
             print(
                 colored(
                     "  ✓ RRT*-Connect found path.\n"
-                    "    Press 'Preview RRT* Raw', 'Preview RRT* Smooth', or 'Execute Path'.",
+                    "    Press 'Preview RRT* Raw', 'Preview RRT* Smooth', or 'Move to Next'.",
                     "green",
                 )
             )
@@ -794,7 +853,7 @@ def main(
                 meshcat.GetButtonClicks("Preview RRT* Smooth")
                 > num_preview_smooth_clicks
             )
-            execute = meshcat.GetButtonClicks("Execute Path") > num_execute_clicks
+            execute = meshcat.GetButtonClicks("Move to Next") > num_move_to_next_clicks
 
             if preview_raw:
                 num_preview_raw_clicks += 1
@@ -814,7 +873,7 @@ def main(
                 )
                 print(colored("  ✓ Smooth preview done.", "cyan"))
             elif execute:
-                num_execute_clicks += 1
+                num_move_to_next_clicks += 1
                 if _q_at_scan is not None and np.any(
                     np.abs(q_now - _q_at_scan) > 0.005
                 ):
@@ -878,40 +937,8 @@ def main(
                     frame = _latest_frame.copy() if _latest_frame is not None else None
 
                 if frame is not None:
-                    # Run checkerboard detection and display result
-                    annotated, corners_found = _draw_checkerboard(
-                        frame, corners_h, corners_w
-                    )
-                    label = "CORNERS FOUND" if corners_found else "no corners"
-                    color = (0, 255, 0) if corners_found else (0, 0, 255)
-                    cv2.putText(
-                        annotated,
-                        label,
-                        (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2,
-                        color,
-                        2,
-                    )
-                    cv2.putText(
-                        annotated,
-                        f"scan {scan_idx:03d}",
-                        (20, 80),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (255, 255, 255),
-                        2,
-                    )
-                    cv2.imshow(
-                        "Capture",
-                        cv2.resize(
-                            annotated,
-                            (annotated.shape[1] // 2, annotated.shape[0] // 2),
-                        ),
-                    )
-                    cv2.waitKey(1)
+                    _, corners_found = _draw_checkerboard(frame, corners_h, corners_w)
 
-                    # Save raw (unannotated) frame
                     frame_path = str(calib_dir / f"frame_{scan_idx:05d}.jpg")
                     _frame_queue.put((frame, frame_path))
                     frame_saved = True
@@ -931,6 +958,42 @@ def main(
 
             scan_idx += 1
             state = State.WAITING_FOR_NEXT_SCAN
+
+        # ------------------------------------------------------------------
+        elif state == State.COMPUTING_RESET:
+            if not reset_result["ready"]:
+                simulator.AdvanceTo(simulator.get_context().get_time() + 0.01)
+                continue
+            if not reset_result["success"]:
+                print(colored("❌ RRT* reset planning failed.", "red"))
+                state = State.WAITING_TO_GO_TO_START
+            else:
+                plot_rrt_raw_path_in_meshcat(
+                    station,
+                    reset_result["path"],
+                    name="rrt_raw_path",
+                    rgba=Rgba(1.0, 0.4, 0.0, 1.0),
+                )
+                plot_trajectory_in_meshcat(
+                    station,
+                    reset_result["trajectory"],
+                    rgba=Rgba(0, 1, 1, 1),
+                    name="rrt_traj",
+                )
+                trajectory_start_time = simulator.get_context().get_time()
+                print(colored("  Executing reset trajectory...", "green"))
+                state = State.RESETTING
+
+        # ------------------------------------------------------------------
+        elif state == State.RESETTING:
+            traj_complete = move_along_trajectory(
+                reset_result["trajectory"], trajectory_start_time, simulator, station
+            )
+            if traj_complete:
+                print(colored("✓ Reset to default_position.", "green"))
+                _at_scan_pose = False
+                _q_at_scan = None
+                state = State.DONE
 
         # ------------------------------------------------------------------
         elif state == State.DONE:
@@ -962,10 +1025,10 @@ def main(
     # ==================================================================
     for btn in [
         "Stop Simulation",
-        "Move to Scan",
+        "Move to Next",
         "Preview RRT* Raw",
         "Preview RRT* Smooth",
-        "Execute Path",
+        "Reset",
         *JOG_BUTTONS,
     ]:
         meshcat.DeleteButton(btn)
@@ -1005,7 +1068,7 @@ Examples:
     parser.add_argument(
         "--no_wait",
         action="store_true",
-        help="Execute trajectories immediately without waiting for 'Execute Path'.",
+        help="Execute trajectories immediately without waiting for 'Move to Next'.",
     )
     parser.add_argument(
         "--no_live_view",
@@ -1072,6 +1135,14 @@ Examples:
         default=4,
         help="Camera device number (default: 4).",
     )
+    parser.add_argument(
+        "--hemisphere_pos",
+        type=float,
+        nargs=3,
+        default=None,
+        metavar=("X", "Y", "Z"),
+        help="Directly set hemisphere center position (overrides dist/angle/z). Defaults to HEMISPHERE_CENTER from demo_config.",
+    )
 
     args = parser.parse_args()
     main(
@@ -1084,6 +1155,9 @@ Examples:
         hemisphere_angle_deg=args.hemisphere_angle,
         hemisphere_radius=args.hemisphere_radius,
         hemisphere_z=args.hemisphere_z,
+        hemisphere_pos_override=np.array(args.hemisphere_pos)
+        if args.hemisphere_pos is not None
+        else HEMISPHERE_CENTER,
         num_scan_points=args.num_scan_points,
         coverage=args.coverage,
         corners_h=args.corners_h,

@@ -127,26 +127,13 @@ def main(
     builder = DiagramBuilder()
     scenario = LoadScenario(data=scenario_data)
 
-    hemisphere_pos_offset = None
-    if hemisphere_pos_override is not None:
-        default_pos = np.array(
-            [
-                hemisphere_dist * np.cos(hemisphere_angle),
-                hemisphere_dist * np.sin(hemisphere_angle),
-                hemisphere_z,
-            ]
-        )
-        hemisphere_pos_offset = hemisphere_pos - default_pos
-
     station: IiwaHardwareStationDiagram = builder.AddNamedSystem(
         "station",
         IiwaHardwareStationDiagram(
             scenario=scenario,
-            hemisphere_dist=hemisphere_dist,
-            hemisphere_angle=hemisphere_angle,
+            hemisphere_pos=hemisphere_pos,
             hemisphere_radius=hemisphere_radius,
             use_hardware=use_hardware,
-            hemisphere_pos_offset=hemisphere_pos_offset,
         ),
     )
 

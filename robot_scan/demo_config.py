@@ -45,17 +45,7 @@ T_CAM_TO_TIP = RigidTransform(
 
 # Default robot starting joint configuration (scan_object + localize_scan_object)
 # deg: [-63.38, 52.15, 76.73, -121.60, 4.53, -52.45, 126.88]
-DEFAULT_POSITION = np.array(
-    [
-        -1.10616644,
-        0.91021311,
-        1.3392409,
-        -2.1222599,
-        0.07898072,
-        -0.91539999,
-        2.21445949,
-    ]
-)
+DEFAULT_POSITION = np.deg2rad([-32.06, 56.57, 47.46, -115.28, -0.89, -70.31, -37.64])
 
 # Hemisphere defaults
 HEMISPHERE_DIST = 0.8

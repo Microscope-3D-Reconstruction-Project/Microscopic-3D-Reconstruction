@@ -189,11 +189,9 @@ class InternalStationDiagram(Diagram):
     def __init__(
         self,
         scenario: Scenario,
-        hemisphere_dist,
-        hemisphere_angle,
-        hemisphere_radius,
+        hemisphere_pos=None,
+        hemisphere_radius: float = 0.08,
         package_xmls: List[str] = [],
-        hemisphere_pos_offset=None,
     ):
         super().__init__()
 
@@ -216,65 +214,54 @@ class InternalStationDiagram(Diagram):
             parser=parser,
         )
 
-        # Add other world geometry (e.g., floor, wall, etc.)
-        self.hemisphere_dist = hemisphere_dist
-        self.hemisphere_angle = hemisphere_angle
         self.hemisphere_radius = hemisphere_radius
-        self.hemisphere_pos = np.array(
-            [
-                hemisphere_dist * np.cos(hemisphere_angle),
-                hemisphere_dist * np.sin(hemisphere_angle),
-                0.36,
-            ]
+        self.hemisphere_pos = (
+            np.asarray(hemisphere_pos, dtype=float)
+            if hemisphere_pos is not None
+            else None
         )
-        if hemisphere_pos_offset is not None:
-            self.hemisphere_pos = self.hemisphere_pos + np.asarray(
-                hemisphere_pos_offset, dtype=float
-            )
 
         add_floor(self._plant)
         add_wall(self._plant)
 
-        hemisphere_wall_rot = RotationMatrix.MakeZRotation(self.hemisphere_angle)
-        wall_pos = [
-            self.hemisphere_pos[0] + 0.05,
-            self.hemisphere_pos[1],
-            self.hemisphere_pos[2],
-        ]
-        wall_width = 0.125
-        add_wall(
-            self._plant,
-            wall_width=wall_width,
-            X_WF=RigidTransform(hemisphere_wall_rot, wall_pos),
-        )
+        if self.hemisphere_pos is not None:
+            wall_pos = [
+                self.hemisphere_pos[0] + 0.05,
+                self.hemisphere_pos[1],
+                self.hemisphere_pos[2],
+            ]
+            add_wall(
+                self._plant,
+                wall_width=0.125,
+                X_WF=RigidTransform(RotationMatrix(), wall_pos),
+            )
 
-        add_sphere(  # scanning sphere for visualization
-            self._plant,
-            name="scan_sphere",
-            position=self.hemisphere_pos,
-            radius=self.hemisphere_radius,
-            color=[1.0, 1.0, 0.0, 0.1],
-            collision=False,
-        )
+            add_sphere(
+                self._plant,
+                name="scan_sphere",
+                position=self.hemisphere_pos,
+                radius=self.hemisphere_radius,
+                color=[1.0, 1.0, 0.0, 0.1],
+                collision=False,
+            )
 
-        # add sphere to visualize collisions
-        add_sphere(  # Not visualized for now
-            self._plant,
-            name="collision_sphere",
-            position=self.hemisphere_pos,
-            radius=self.hemisphere_radius - 0.01,
-            color=[0, 0, 0, 0.0],
-            collision=False,
-        )
+            add_sphere(
+                self._plant,
+                name="collision_sphere",
+                position=self.hemisphere_pos,
+                radius=self.hemisphere_radius - 0.01,
+                color=[0, 0, 0, 0.0],
+                collision=False,
+            )
 
-        add_sphere(
-            self._plant,
-            name="initial_center",
-            position=self.hemisphere_pos,
-            radius=0.005,
-            color=[0, 0, 0, 1.0],
-            collision=False,
-        )
+            add_sphere(
+                self._plant,
+                name="initial_center",
+                position=self.hemisphere_pos,
+                radius=0.005,
+                color=[0, 0, 0, 1.0],
+                collision=False,
+            )
 
         self._plant.Finalize()
 
@@ -349,29 +336,28 @@ class InternalStationDiagram(Diagram):
         #         hemisphere_wall_rot, self.hemisphere_pos + np.array([0.0, 0.005, 0.0])
         #     ),
         # )
-        add_wall(
-            self._optimization_plant,
-            wall_width=wall_width,
-            X_WF=RigidTransform(hemisphere_wall_rot, wall_pos),
-        )
+        if self.hemisphere_pos is not None:
+            add_wall(
+                self._optimization_plant,
+                wall_width=0.125,
+                X_WF=RigidTransform(RotationMatrix(), wall_pos),
+            )
 
-        # Add sphere to visualize scan points
-        add_sphere(
-            self._optimization_plant,
-            name="scan_sphere",
-            position=self.hemisphere_pos,
-            radius=self.hemisphere_radius,
-            collision=False,
-        )
+            add_sphere(
+                self._optimization_plant,
+                name="scan_sphere",
+                position=self.hemisphere_pos,
+                radius=self.hemisphere_radius,
+                collision=False,
+            )
 
-        # leeway = 0.05  # space to give microscope tip to avoid collision
-        add_sphere(  # collision sphere within scan_sphere
-            self._optimization_plant,
-            name="collision_sphere",
-            position=self.hemisphere_pos,
-            radius=self.hemisphere_radius - 0.01,
-            collision=True,
-        )
+            add_sphere(
+                self._optimization_plant,
+                name="collision_sphere",
+                position=self.hemisphere_pos,
+                radius=self.hemisphere_radius - 0.01,
+                collision=True,
+            )
 
         # Finalize the plant BEFORE building the diagram
         self._optimization_plant.Finalize()
@@ -485,42 +471,29 @@ class IiwaHardwareStationDiagram(Diagram):
         scenario: Scenario,
         use_hardware: bool,
         hemisphere_dist: float,
-        hemisphere_angle: float,
-        hemisphere_radius: float,
+        hemisphere_pos=None,
+        hemisphere_radius: float = 0.08,
         control_mode: Union[IiwaControlMode, str] = IiwaControlMode.kPositionOnly,
         create_point_clouds: bool = False,
         package_xmls: List[str] = [],
-        hemisphere_pos_offset=None,
     ):
         """
         Args:
             scenario (Scenario): The scenario to use. This must contain one iiwa.
             use_hardware (bool): Whether to use real world hardware.
-            control_mode (Union[IiwaControlMode, str], optional): The control mode to
-                use. Must be one of "position_and_torque", "position_only", or
-                "torque_only".
-            create_point_clouds (bool, optional): Whether to create point clouds from
-                the camera images. Defaults to False. Setting this to True might add
-                computational overhead.
-            hemisphere_pos_offset: optional (3,) array added on top of the position
-                derived from hemisphere_dist/angle, to translate all spheres/geometry.
+            hemisphere_pos: (3,) array — the actual center position of the hemisphere
+                in world frame. Pass None to skip hemisphere geometry (e.g. teleop).
+            hemisphere_radius: radius of the hemisphere in meters.
+            control_mode: one of "position_and_torque", "position_only", "torque_only".
         """
         super().__init__()
 
-        self.hemisphere_dist = hemisphere_dist
-        self.hemisphere_angle = hemisphere_angle
         self.hemisphere_radius = hemisphere_radius
-        self.hemisphere_pos = np.array(
-            [
-                hemisphere_dist * np.cos(hemisphere_angle),
-                hemisphere_dist * np.sin(hemisphere_angle),
-                0.36,
-            ]
+        self.hemisphere_pos = (
+            np.asarray(hemisphere_pos, dtype=float)
+            if hemisphere_pos is not None
+            else None
         )
-        if hemisphere_pos_offset is not None:
-            self.hemisphere_pos = self.hemisphere_pos + np.asarray(
-                hemisphere_pos_offset, dtype=float
-            )
 
         self._use_hardware = use_hardware
         if isinstance(control_mode, str):
@@ -539,10 +512,8 @@ class IiwaHardwareStationDiagram(Diagram):
             InternalStationDiagram(
                 scenario=scenario,
                 package_xmls=package_xmls,
-                hemisphere_dist=self.hemisphere_dist,
-                hemisphere_angle=self.hemisphere_angle,
+                hemisphere_pos=self.hemisphere_pos,
                 hemisphere_radius=self.hemisphere_radius,
-                hemisphere_pos_offset=hemisphere_pos_offset,
             ),
         )
         self.internal_scene_graph = self.internal_station.get_scene_graph()

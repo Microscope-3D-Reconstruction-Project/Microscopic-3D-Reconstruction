@@ -37,8 +37,9 @@ def main() -> None:
         "station",
         IiwaHardwareStationDiagram(
             scenario=scenario,
-            hemisphere_dist=0.8,
-            hemisphere_angle=np.deg2rad(60),
+            hemisphere_pos=np.array(
+                [0.8 * np.cos(np.deg2rad(60)), 0.8 * np.sin(np.deg2rad(60)), 0.36]
+            ),
             hemisphere_radius=0.08,
             use_hardware=False,
         ),
