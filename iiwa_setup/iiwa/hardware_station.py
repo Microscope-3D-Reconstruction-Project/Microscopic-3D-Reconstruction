@@ -470,7 +470,6 @@ class IiwaHardwareStationDiagram(Diagram):
         self,
         scenario: Scenario,
         use_hardware: bool,
-        hemisphere_dist: float,
         hemisphere_pos=None,
         hemisphere_radius: float = 0.08,
         control_mode: Union[IiwaControlMode, str] = IiwaControlMode.kPositionOnly,

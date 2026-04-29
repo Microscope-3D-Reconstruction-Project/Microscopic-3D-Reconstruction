@@ -39,6 +39,7 @@ from demo_config import (
     V_AXIS,
     get_config,
 )
+from drake.lcmt_iiwa_status import lcmt_iiwa_status
 from manipulation.station import LoadScenario
 from pydrake.all import (
     AddFrameTriadIllustration,
@@ -52,6 +53,7 @@ from pydrake.all import (
     RotationMatrix,
     Simulator,
 )
+from pydrake.lcm import DrakeLcm
 from pydrake.systems.primitives import VectorLogSink
 from termcolor import colored
 
@@ -84,6 +86,9 @@ from utils.sew_stereo import (
 
 
 class State(Enum):
+    WAITING_FOR_PRESCAN = auto()
+    COMPUTING_PRESCAN = auto()
+    MOVING_TO_PRESCAN = auto()
     WAITING_TO_GO_TO_START = auto()
     COMPUTING_MOVE_TO_START = auto()
     MOVING_TO_START = auto()
@@ -217,6 +222,30 @@ def main(
     )
 
     # ==================================================================
+    # Read initial hardware position via LCM before building diagram
+    # ==================================================================
+    if use_hardware:
+        print(colored("Waiting for IIWA_STATUS from hardware...", "cyan"))
+        _lc = DrakeLcm()
+        _q_hardware = [None]
+
+        def _iiwa_handler(data: bytes) -> None:
+            msg = lcmt_iiwa_status.decode(data)
+            _q_hardware[0] = np.array(msg.joint_position_measured)
+
+        _lc.Subscribe("IIWA_STATUS", _iiwa_handler)
+        while _q_hardware[0] is None:
+            _lc.HandleSubscriptions(100)
+        initial_q = _q_hardware[0]
+        print(
+            colored(
+                f"✓ Hardware position: {np.rad2deg(initial_q).round(1)} deg", "cyan"
+            )
+        )
+    else:
+        initial_q = default_position
+
+    # ==================================================================
     # Diagram setup
     # ==================================================================
     builder = DiagramBuilder()
@@ -240,7 +269,7 @@ def main(
         state_logger.get_input_port(),
     )
 
-    dummy = builder.AddSystem(ConstantVectorSource(default_position))
+    dummy = builder.AddSystem(ConstantVectorSource(initial_q))
     builder.Connect(dummy.get_output_port(), station.GetInputPort("iiwa.position"))
 
     _ = MeshcatVisualizer.AddToBuilder(
@@ -269,6 +298,7 @@ def main(
     # Buttons + sliders
     # ==================================================================
     meshcat.AddButton("Stop Simulation")
+    meshcat.AddButton("Move to Prescan")
     meshcat.AddButton("Move to Next")
     meshcat.AddButton("Preview RRT* Raw")
     meshcat.AddButton("Preview RRT* Smooth")
@@ -392,8 +422,12 @@ def main(
     # ==================================================================
     # State machine setup
     # ==================================================================
-    state = State.WAITING_TO_GO_TO_START
-    prev_state = State.WAITING_TO_GO_TO_START
+    _init_ctx = station.GetMyContextFromRoot(simulator.get_context())
+    _q_startup = station.GetOutputPort("iiwa.position_measured").Eval(_init_ctx)
+    _at_default = np.all(np.abs(_q_startup - default_position) < 0.1)
+
+    state = State.WAITING_TO_GO_TO_START if _at_default else State.WAITING_FOR_PRESCAN
+    prev_state = state
     scan_idx = start_idx
     curr_idx = 0
     trajectory_start_time = 0.0
@@ -415,9 +449,16 @@ def main(
     }
     rrt_result = {"ready": False, "success": False, "trajectory": None, "path": None}
     reset_result = {"ready": False, "success": False, "trajectory": None, "path": None}
+    prescan_result = {
+        "ready": False,
+        "success": False,
+        "trajectory": None,
+        "path": None,
+    }
 
     hemisphere_trajectory = None
 
+    num_move_to_prescan_clicks = 0
     num_move_to_next_clicks = 0
     num_preview_raw_clicks = 0
     num_preview_smooth_clicks = 0
@@ -425,6 +466,8 @@ def main(
     jog_click_counts = {name: 0 for name in JOG_BUTTONS}
 
     MOVING_STATES = {
+        State.COMPUTING_PRESCAN,
+        State.MOVING_TO_PRESCAN,
         State.COMPUTING_MOVE_TO_START,
         State.MOVING_TO_START,
         State.COMPUTING_IKS,
@@ -441,7 +484,11 @@ def main(
     _pending_traj_type: str = ""
     _at_scan_pose = False
 
-    print(colored("\nReady. Press 'Move to Next' in Meshcat to begin.", "cyan"))
+    if _at_default:
+        print(colored("\nReady. Press 'Move to Next' in Meshcat to begin.", "cyan"))
+    else:
+        print(colored("\nRobot is not at default_position.", "yellow"))
+        print(colored("  Press 'Move to Prescan' to move there first.", "yellow"))
     print(
         colored(
             "  At each viewpoint: jog until object is on the crosshair, then press 'Move to Next'.",
@@ -541,7 +588,75 @@ def main(
                 state = State.COMPUTING_RESET
 
         # ------------------------------------------------------------------
-        if state == State.WAITING_TO_GO_TO_START:
+        if state == State.WAITING_FOR_PRESCAN:
+            if meshcat.GetButtonClicks("Move to Prescan") > num_move_to_prescan_clicks:
+                num_move_to_prescan_clicks += 1
+                print(colored("Planning RRT* move to default_position...", "cyan"))
+                prescan_result["ready"] = False
+                prescan_result["success"] = False
+                threading.Thread(
+                    target=plan_rrt_star_async,
+                    args=(
+                        station,
+                        q_now,
+                        default_position,
+                        vel_limits,
+                        acc_limits,
+                        prescan_result,
+                    ),
+                    daemon=True,
+                ).start()
+                state = State.COMPUTING_PRESCAN
+            else:
+                simulator.AdvanceTo(simulator.get_context().get_time() + 0.01)
+                continue
+
+        # ------------------------------------------------------------------
+        elif state == State.COMPUTING_PRESCAN:
+            if not prescan_result["ready"]:
+                simulator.AdvanceTo(simulator.get_context().get_time() + 0.01)
+                continue
+            if not prescan_result["success"]:
+                print(
+                    colored(
+                        "❌ RRT* to default_position failed. Retrying on next click.",
+                        "red",
+                    )
+                )
+                state = State.WAITING_FOR_PRESCAN
+            else:
+                plot_rrt_raw_path_in_meshcat(
+                    station,
+                    prescan_result["path"],
+                    name="rrt_raw_path",
+                    rgba=Rgba(1.0, 0.4, 0.0, 1.0),
+                )
+                plot_trajectory_in_meshcat(
+                    station,
+                    prescan_result["trajectory"],
+                    rgba=Rgba(0, 1, 1, 1),
+                    name="rrt_traj",
+                )
+                trajectory_start_time = simulator.get_context().get_time()
+                print(colored("  Executing prescan trajectory...", "green"))
+                state = State.MOVING_TO_PRESCAN
+
+        # ------------------------------------------------------------------
+        elif state == State.MOVING_TO_PRESCAN:
+            traj_complete = move_along_trajectory(
+                prescan_result["trajectory"], trajectory_start_time, simulator, station
+            )
+            if traj_complete:
+                print(
+                    colored(
+                        "✓ At default_position. Press 'Move to Next' to begin scan.",
+                        "green",
+                    )
+                )
+                state = State.WAITING_TO_GO_TO_START
+
+        # ------------------------------------------------------------------
+        elif state == State.WAITING_TO_GO_TO_START:
             if meshcat.GetButtonClicks("Move to Next") <= num_move_to_next_clicks:
                 simulator.AdvanceTo(simulator.get_context().get_time() + 0.01)
                 continue
@@ -683,18 +798,8 @@ def main(
                     rgba=Rgba(0, 1, 0, 1),
                     name="hemisphere_traj",
                 )
-                if no_wait:
-                    trajectory_start_time = simulator.get_context().get_time()
-                    state = State.MOVING_ALONG_HEMISPHERE
-                else:
-                    print(
-                        colored(
-                            f"  ✓ Hemisphere trajectory ready for waypoint {scan_idx}.\n"
-                            "    Press 'Move to Next' to run it.",
-                            "green",
-                        )
-                    )
-                    state = State.AWAITING_HEMISPHERE_CONFIRM
+                trajectory_start_time = simulator.get_context().get_time()
+                state = State.MOVING_ALONG_HEMISPHERE
             else:
                 if not hemisphere_ik_result["valid_joints"]:
                     print(colored("  Hemisphere path: invalid joint values.", "yellow"))
@@ -1015,6 +1120,7 @@ def main(
     # ==================================================================
     for btn in [
         "Stop Simulation",
+        "Move to Prescan",
         "Move to Next",
         "Preview RRT* Raw",
         "Preview RRT* Smooth",
