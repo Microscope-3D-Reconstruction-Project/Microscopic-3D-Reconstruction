@@ -4,3 +4,6 @@
 [submodule "colmap"]
 	path = colmap
 	url = https://github.com/colmap/colmap
+[submodule "sam3"]
+	path = sam3
+	url = https://github.com/facebookresearch/sam3.git
