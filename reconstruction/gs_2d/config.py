@@ -23,7 +23,7 @@ class Config:
     # ── Input / output paths ────────────────────────────────────────────────────────────
     model_dir: str = "outputs/sparse_model"
     images_dir: str = "outputs/images"
-    masks_dir: Optional[str] = None
+    masks_dir: Optional[str] = "outputs/masks"
     splat_dir: str = "outputs/gs_2d"
 
     # ── Data ───────────────────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ class Config:
     max_steps: int = 30_000
     eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
     save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
-    save_ply: bool = False
+    save_ply: bool = True
     ply_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
     disable_video: bool = False
 
