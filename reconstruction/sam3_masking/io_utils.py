@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from .mask_utils import output_masks_to_numpy
+from .records import serializable_record
 
 
 def create_overlay_image(image, combined_mask, overlay_color=(255, 0, 0), alpha=0.4):
