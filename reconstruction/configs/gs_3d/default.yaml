@@ -9,11 +9,17 @@ random_seed: 0
 strategy:
   _target_: gsplat.strategy.DefaultStrategy
   verbose: true
+  prune_opa: 0.05
+  grow_grad2d: 0.0002
+  grow_scale3d: 0.01
+  prune_scale3d: 0.1
   refine_start_iter: 500
   refine_stop_iter: 15000
   reset_every: 3000
   refine_every: 100
   absgrad: false
+  revised_opacity: false
+  key_for_gradient: means2d
 
 # ── Viewer ─────────────────────────────────────────────────────────────────────
 disable_viewer: false
@@ -32,8 +38,9 @@ experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 # ── Input / output paths ───────────────────────────────────────────────────────
 input_paths:
   model_dir:  ${output_dir}/${experiment_name}/sparse_model
-  images_dir: ${output_dir}/${experiment_name}/focus_stacked_images
+  images_dir: ${output_dir}/${experiment_name}/sam3_masking/masked_images
   masks_dir:  ${output_dir}/${experiment_name}/sam3_masking/masks                  # optional mask directory
+  valid_region_masks: ${output_dir}/${experiment_name}/focus_stacked_masks
 
 output_paths:
   splat_dir: ${output_dir}/${experiment_name}/gs_3d

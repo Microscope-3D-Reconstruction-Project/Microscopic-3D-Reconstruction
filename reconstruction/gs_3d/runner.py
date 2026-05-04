@@ -133,6 +133,7 @@ class Runner:
             colmap_dir=cfg.model_dir,
             images_dir=cfg.images_dir,
             masks_dir=cfg.masks_dir,
+            valid_region_masks_dir=cfg.valid_region_masks,
             factor=cfg.data_factor,
             normalize=cfg.normalize_world_space,
             test_every=cfg.test_every,
@@ -416,7 +417,15 @@ class Runner:
         pixels = data["image"].to(device) / 255.0
         num_rays = pixels.shape[0] * pixels.shape[1] * pixels.shape[2]
         image_ids = data["image_id"].to(device)
-        masks = data["mask"].to(device) if "mask" in data else None
+        object_mask = data["mask"].to(device) if "mask" in data else None
+        valid_region_mask = (
+            data["valid_region_mask"].to(device)
+            if "valid_region_mask" in data
+            else None
+        )
+        photometric_mask = (
+            valid_region_mask if valid_region_mask is not None else object_mask
+        )
 
         points = depths_gt = None
         if cfg.depth_loss:
@@ -442,7 +451,7 @@ class Runner:
             far_plane=cfg.far_plane,
             image_ids=image_ids,
             render_mode="RGB+ED" if cfg.depth_loss else "RGB",
-            masks=masks,
+            masks=photometric_mask,
         )
         colors = renders[..., :3]
         depths = renders[..., 3:4] if renders.shape[-1] == 4 else None
@@ -474,10 +483,10 @@ class Runner:
         )
 
         # ── Loss ──────────────────────────────────────────────────────────
-        if masks is not None:
-            l1loss = F.l1_loss(colors[masks], pixels[masks])
-            colors_ssim = colors * masks[..., None]
-            pixels_ssim = pixels * masks[..., None]
+        if photometric_mask is not None:
+            l1loss = F.l1_loss(colors[photometric_mask], pixels[photometric_mask])
+            colors_ssim = colors * photometric_mask[..., None]
+            pixels_ssim = pixels * photometric_mask[..., None]
         else:
             l1loss = F.l1_loss(colors, pixels)
             colors_ssim = colors
@@ -489,8 +498,14 @@ class Runner:
         )
         loss = torch.lerp(l1loss, ssimloss, cfg.ssim_lambda)
 
-        if masks is not None and cfg.bg_alpha_loss:
-            bg_alpha_loss = alphas[~masks].mean()
+        background_mask = None
+        if object_mask is not None:
+            background_mask = ~object_mask
+            if valid_region_mask is not None:
+                background_mask = background_mask & valid_region_mask
+
+        if background_mask is not None and cfg.bg_alpha_loss and background_mask.any():
+            bg_alpha_loss = alphas[background_mask].mean()
             loss = loss + (
                 bg_alpha_loss * cfg.bg_alpha_lambda
                 if cfg.bg_alpha_lambda > 0.0

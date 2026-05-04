@@ -115,7 +115,15 @@ class Evaluator:
             camtoworlds = data["camtoworld"].to(device)
             Ks = data["K"].to(device)
             pixels = data["image"].to(device) / 255.0
-            masks = data["mask"].to(device) if "mask" in data else None
+            object_mask = data["mask"].to(device) if "mask" in data else None
+            valid_region_mask = (
+                data["valid_region_mask"].to(device)
+                if "valid_region_mask" in data
+                else None
+            )
+            eval_mask = (
+                valid_region_mask if valid_region_mask is not None else object_mask
+            )
             height, width = pixels.shape[1:3]
 
             torch.cuda.synchronize()
@@ -128,13 +136,14 @@ class Evaluator:
                 sh_degree=cfg.sh_degree,
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
-                masks=masks,
+                masks=eval_mask,
             )  # [1, H, W, 3]
             torch.cuda.synchronize()
             ellipse_time += max(time.time() - tic, 1e-10)
 
             colors = torch.clamp(colors, 0.0, 1.0)
-            canvas_list = [pixels, colors]
+            colors_eval, pixels_eval = _apply_eval_mask(colors, pixels, eval_mask)
+            canvas_list = [pixels_eval, colors_eval]
 
             if self.world_rank == 0:
                 # write images
@@ -145,8 +154,8 @@ class Evaluator:
                     canvas,
                 )
 
-                pixels_p = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
-                colors_p = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                pixels_p = pixels_eval.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                colors_p = colors_eval.permute(0, 3, 1, 2)  # [1, 3, H, W]
                 metrics["psnr"].append(self.psnr(colors_p, pixels_p))
                 metrics["ssim"].append(self.ssim(colors_p, pixels_p))
                 metrics["lpips"].append(self.lpips(colors_p, pixels_p))
