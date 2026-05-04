@@ -15,7 +15,7 @@ feat_extract_match:
   input_paths:
     focus_stack_dir: ${...output_dir}/${...experiment_name}
     images_subdir: focus_stacked_images
-    masks_subdir: masks
+    masks_subdir: sam3_masking/masks
   output_paths:
     output_dir: ${output_dir}/${experiment_name}
     database_filename: database.db

@@ -13,7 +13,7 @@ experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 output_paths:
   output_dir: ${output_dir}/${experiment_name}
   images_subdir: focus_stacked_images
-  masks_subdir: masks
+  masks_subdir: focus_stacked_masks
   depthmaps_subdir: depthmaps
   poses_filename: poses.json
   intrinsics_filename: intrinsics.json
