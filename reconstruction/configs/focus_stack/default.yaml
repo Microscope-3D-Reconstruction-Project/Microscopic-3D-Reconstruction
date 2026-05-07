@@ -20,6 +20,7 @@ output_paths:
 
 # ── focus-stack CLI params ────────────────────────────────────────────────────
 focus_stack_params:
+  focal_stack_size: null       # odd number of images centered on the reference frame; null = use all images
   full_resolution_align: true
   global_align: true
   align_keep_size: true

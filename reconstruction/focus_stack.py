@@ -26,15 +26,17 @@ def _load_pose_for_scan(
     # Collect numeric suffixes from input frame files.
     frame_numbers = []
     for f in image_files:
+        # m = re.search(r"frame_(\d+)\.png$", os.path.basename(f))
         m = re.search(r"frame_(\d+)\.jpg$", os.path.basename(f))
+
         if m:
             frame_numbers.append(m.group(1))
 
     # Collect indexed pose_*.npy files.
     pose_indexed = sorted(glob.glob(os.path.join(subdir_path, "pose_*.npy")))
     pose_numbers = []
-    for p in pose_indexed:
-        m = re.search(r"pose_(\d+)\.npy$", os.path.basename(p))
+    for pose in pose_indexed:
+        m = re.search(r"pose_(\d+)\.npy$", os.path.basename(pose))
         if m:
             pose_numbers.append(m.group(1))
 
@@ -60,18 +62,74 @@ def _load_pose_for_scan(
     )
 
 
+def _validate_focal_stack_size(focal_stack_size: int | None) -> int | None:
+    if focal_stack_size is None:
+        return None
+
+    if isinstance(focal_stack_size, bool):
+        raise ValueError(
+            "focus_stack_params.focal_stack_size must be an odd integer or null."
+        )
+
+    try:
+        normalized_size = int(focal_stack_size)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "focus_stack_params.focal_stack_size must be an odd integer or null."
+        ) from exc
+
+    if isinstance(focal_stack_size, float) and not focal_stack_size.is_integer():
+        raise ValueError(
+            "focus_stack_params.focal_stack_size must be an odd integer or null, "
+            f"got {focal_stack_size}."
+        )
+    focal_stack_size = normalized_size
+
+    if focal_stack_size <= 0 or focal_stack_size % 2 == 0:
+        raise ValueError(
+            "focus_stack_params.focal_stack_size must be a positive odd integer "
+            f"or null, got {focal_stack_size}."
+        )
+
+    return focal_stack_size
+
+
+def _select_focus_stack_images(
+    image_files: list, ref_idx: int, focal_stack_size: int | None
+) -> tuple[list, int]:
+    """Return the image subset and reference index to pass to focus-stack."""
+    if focal_stack_size is None:
+        return image_files, ref_idx
+
+    if focal_stack_size > len(image_files):
+        raise ValueError(
+            "focus_stack_params.focal_stack_size cannot exceed the number of "
+            f"images in the scan: requested {focal_stack_size}, found "
+            f"{len(image_files)}."
+        )
+
+    half_window = focal_stack_size // 2
+    start_idx = ref_idx - half_window
+    end_idx = ref_idx + half_window + 1
+    if start_idx < 0 or end_idx > len(image_files):
+        raise ValueError(
+            "focus_stack_params.focal_stack_size must fit around the reference "
+            f"image: requested {focal_stack_size}, reference index is {ref_idx}, "
+            f"and the scan has {len(image_files)} images."
+        )
+
+    return image_files[start_idx:end_idx], half_window
+
+
 def run_focus_stack(cfg: DictConfig) -> None:
     dataset_dir = cfg.dataset_dir
+    params = cfg.focus_stack_params
+    focal_stack_size = _validate_focal_stack_size(params.focal_stack_size)
+
     out_dir = cfg.output_paths.output_dir
     out_image_dir = os.path.join(out_dir, cfg.output_paths.images_subdir)
     out_depth_dir = os.path.join(out_dir, cfg.output_paths.depthmaps_subdir)
     out_mask_dir = os.path.join(out_dir, cfg.output_paths.masks_subdir)
-    for path in (out_image_dir, out_depth_dir, out_mask_dir):
-        if os.path.isdir(path):
-            shutil.rmtree(path)
-    os.makedirs(out_image_dir, exist_ok=True)
-    os.makedirs(out_depth_dir, exist_ok=True)
-    os.makedirs(out_mask_dir, exist_ok=True)
 
     if cfg.scan_dirs is not None:
         scan_dirs = sorted(
@@ -85,29 +143,48 @@ def run_focus_stack(cfg: DictConfig) -> None:
             and d.startswith(cfg.scan_prefix)
         )
 
-    p = cfg.focus_stack_params
-    flags = []
-    if p.full_resolution_align:
-        flags.append("--full-resolution-align")
-    if p.global_align:
-        flags.append("--global-align")
-    if p.align_keep_size:
-        flags.append("--align-keep-size")
-    if p.no_contrast:
-        flags.append("--no-contrast")
-
-    poses = {}
-
+    scan_inputs = []
     for subdir in scan_dirs:
         subdir_path = os.path.join(dataset_dir, subdir)
+        # image_files = sorted(glob.glob(os.path.join(subdir_path, "*.png")))
         image_files = sorted(glob.glob(os.path.join(subdir_path, "*.jpg")))
         if not image_files:
+            # print(f"No .png files found in {subdir_path}, skipping.")
             print(f"No .jpg files found in {subdir_path}, skipping.")
             continue
 
         ref_idx = (
             len(image_files) // 2
         )  # picks the middle one TODO: take a look at this later
+        try:
+            _select_focus_stack_images(image_files, ref_idx, focal_stack_size)
+        except ValueError as exc:
+            raise ValueError(f"{subdir}: {exc}") from exc
+        scan_inputs.append((subdir, subdir_path, image_files, ref_idx))
+
+    for path in (out_image_dir, out_depth_dir, out_mask_dir):
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+    os.makedirs(out_image_dir, exist_ok=True)
+    os.makedirs(out_depth_dir, exist_ok=True)
+    os.makedirs(out_mask_dir, exist_ok=True)
+
+    flags = []
+    if params.full_resolution_align:
+        flags.append("--full-resolution-align")
+    if params.global_align:
+        flags.append("--global-align")
+    if params.align_keep_size:
+        flags.append("--align-keep-size")
+    if params.no_contrast:
+        flags.append("--no-contrast")
+
+    poses = {}
+
+    for subdir, subdir_path, image_files, ref_idx in scan_inputs:
+        selected_image_files, selected_ref_idx = _select_focus_stack_images(
+            image_files, ref_idx, focal_stack_size
+        )
         output_file = os.path.join(out_image_dir, f"{subdir}.png")
         depth_file = os.path.join(out_depth_dir, f"{subdir}.png")
         mask_file = os.path.join(out_mask_dir, f"{subdir}.png")
@@ -115,12 +192,12 @@ def run_focus_stack(cfg: DictConfig) -> None:
             ["focus-stack"]
             + flags
             + [
-                f"--reference={ref_idx}",
+                f"--reference={selected_ref_idx}",
                 f"--validmask={mask_file}",
                 f"--depthmap={depth_file}",
                 f"--output={output_file}",
             ]
-            + image_files
+            + selected_image_files
         )
         print(f"Running: {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
