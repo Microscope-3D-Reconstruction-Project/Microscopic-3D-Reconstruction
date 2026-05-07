@@ -126,6 +126,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
     params = cfg.focus_stack_params
     focal_stack_size = _validate_focal_stack_size(params.focal_stack_size)
 
+    experiment_dir = os.path.join(cfg.output_dir, cfg.experiment_name)
     out_dir = cfg.output_paths.output_dir
     out_image_dir = os.path.join(out_dir, cfg.output_paths.images_subdir)
     out_depth_dir = os.path.join(out_dir, cfg.output_paths.depthmaps_subdir)
@@ -205,14 +206,15 @@ def run_focus_stack(cfg: DictConfig) -> None:
         pose_matrix = _load_pose_for_scan(subdir_path, image_files, ref_idx)
         poses[f"{subdir}.png"] = pose_matrix.tolist()
 
-    poses_path = os.path.join(out_dir, cfg.output_paths.poses_filename)
+    poses_path = os.path.join(experiment_dir, cfg.output_paths.poses_filename)
+    os.makedirs(experiment_dir, exist_ok=True)
     with open(poses_path, "w") as f:
         json.dump(poses, f, indent=2)
     print(f"Wrote poses to {poses_path}")
 
     # Copy intrinsics.json from dataset directory to output directory
     src_intrinsics = os.path.join(dataset_dir, cfg.output_paths.intrinsics_filename)
-    dst_intrinsics = os.path.join(out_dir, cfg.output_paths.intrinsics_filename)
+    dst_intrinsics = os.path.join(experiment_dir, cfg.output_paths.intrinsics_filename)
     if os.path.exists(src_intrinsics):
         shutil.copy2(src_intrinsics, dst_intrinsics)
         print(f"Copied intrinsics to {dst_intrinsics}")
@@ -221,7 +223,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
 
 
 @hydra.main(
-    config_path="configs/focus_stack", config_name="default", version_base="1.3"
+    config_path="../configs/focus_stack", config_name="default", version_base="1.3"
 )
 def main(cfg: DictConfig) -> None:
     run_focus_stack(cfg)

@@ -18,12 +18,12 @@ experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 
 # ── Input / output paths ───────────────────────────────────────────────────────
 input_paths:
-  model_dir:  ${output_dir}/${experiment_name}/sparse_model
-  images_dir: ${output_dir}/${experiment_name}/focus_stacked_images
-  masks_dir:  ${output_dir}/${experiment_name}/sam3_masking/masks
+  model_dir:  ${..output_dir}/${..experiment_name}/sparse_model
+  images_dir: ${..output_dir}/${..experiment_name}/focus_stack/focus_stacked_images
+  masks_dir:  ${..output_dir}/${..experiment_name}/sam3_masking/masks
 
 output_paths:
-  splat_dir: ${output_dir}/${experiment_name}/gs_2d
+  splat_dir: ${..output_dir}/${..experiment_name}/gs_2d
 
 # ── Data ───────────────────────────────────────────────────────────────────────
 data_factor: 4

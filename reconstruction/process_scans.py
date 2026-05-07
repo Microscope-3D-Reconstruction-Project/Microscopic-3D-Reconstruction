@@ -42,10 +42,8 @@ def create_scan_paths(cfg: DictConfig) -> ScanPaths:
     recon_out_dir.mkdir(parents=True, exist_ok=True)
 
     return ScanPaths(
-        feat_images_path=Path(cfg.feat_extract_match.input_paths.focus_stack_dir)
-        / cfg.feat_extract_match.input_paths.images_subdir,
-        feat_masks_path=Path(cfg.feat_extract_match.input_paths.focus_stack_dir)
-        / cfg.feat_extract_match.input_paths.masks_subdir,
+        feat_images_path=Path(cfg.feat_extract_match.input_paths.images_dir),
+        feat_masks_path=Path(cfg.feat_extract_match.input_paths.masks_dir),
         feat_database_path=feat_out_dir
         / cfg.feat_extract_match.output_paths.database_filename,
         poses_json_path=Path(cfg.reconstruction.input_paths.poses_json),

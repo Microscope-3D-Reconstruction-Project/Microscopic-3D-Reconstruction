@@ -24,7 +24,7 @@ class Config:
     model_dir: str = "outputs/sparse_model"
     images_dir: str = "outputs/images"
     masks_dir: Optional[str] = None
-    valid_region_masks: Optional[str] = None
+    valid_region_masks_dir: Optional[str] = None
     splat_dir: str = "outputs/gsplat"
     data_factor: int = 4
     test_every: int = 8

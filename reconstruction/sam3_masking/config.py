@@ -65,7 +65,7 @@ def build_config(cfg_raw: DictConfig) -> Sam3MaskingConfig:
     rerun = cfg["rerun"]
     dinov3 = cfg["dinov3"]
 
-    input_dir = f"{input_paths['focus_stack_dir']}/{input_paths['images_subdir']}"
+    input_dir = input_paths["images_dir"]
     output_dir = output_paths["output_dir"]
 
     config = Sam3MaskingConfig(

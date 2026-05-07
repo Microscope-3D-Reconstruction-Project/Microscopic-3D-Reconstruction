@@ -13,11 +13,10 @@ experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 # ── Feature extraction / matching ─────────────────────────────────────────────
 feat_extract_match:
   input_paths:
-    focus_stack_dir: ${...output_dir}/${...experiment_name}
-    images_subdir: focus_stacked_images
-    masks_subdir: sam3_masking/masks
+    images_dir: ${...output_dir}/${...experiment_name}/focus_stack/focus_stacked_images
+    masks_dir: ${...output_dir}/${...experiment_name}/sam3_masking/masks
   output_paths:
-    output_dir: ${output_dir}/${experiment_name}
+    output_dir: ${...output_dir}/${...experiment_name}
     database_filename: database.db
   extraction:
     device: cuda
@@ -37,12 +36,12 @@ reconstruction:
   load_prior_intrinsics: false  # use known camera intrinsics as prior
   refine_intrinsics: true    # whether to refine camera intrinsics during bundle adjustment
   input_paths:
-    poses_json: ${...feat_extract_match.input_paths.focus_stack_dir}/poses.json
-    prior_intrinsics_filepath: ${...feat_extract_match.input_paths.focus_stack_dir}/intrinsics.json
-    images_dir: ${...feat_extract_match.input_paths.focus_stack_dir}/${...feat_extract_match.input_paths.images_subdir}
+    poses_json: ${...output_dir}/${...experiment_name}/poses.json
+    prior_intrinsics_filepath: ${...output_dir}/${...experiment_name}/intrinsics.json
+    images_dir: ${...feat_extract_match.input_paths.images_dir}
     database_filepath: ${...feat_extract_match.output_paths.output_dir}/${...feat_extract_match.output_paths.database_filename}
   output_paths:
-    output_dir: ${output_dir}/${experiment_name}
+    output_dir: ${...output_dir}/${...experiment_name}
     model_dirname: sparse_model
   mapping_params:
     min_focal_length_ratio: 0.1

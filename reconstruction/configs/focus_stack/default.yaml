@@ -11,7 +11,7 @@ experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 
 # ── Output paths ──────────────────────────────────────────────────────────────
 output_paths:
-  output_dir: ${output_dir}/${experiment_name}
+  output_dir: ${..output_dir}/${..experiment_name}/focus_stack
   images_subdir: focus_stacked_images
   masks_subdir: focus_stacked_masks
   depthmaps_subdir: depthmaps

@@ -133,7 +133,7 @@ class Runner:
             colmap_dir=cfg.model_dir,
             images_dir=cfg.images_dir,
             masks_dir=cfg.masks_dir,
-            valid_region_masks_dir=cfg.valid_region_masks,
+            valid_region_masks_dir=cfg.valid_region_masks_dir,
             factor=cfg.data_factor,
             normalize=cfg.normalize_world_space,
             test_every=cfg.test_every,
