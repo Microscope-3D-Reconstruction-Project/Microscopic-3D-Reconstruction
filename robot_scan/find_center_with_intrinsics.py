@@ -223,6 +223,7 @@ start_idx: {start_idx}
         num_scan_points=num_scan_points,
         coverage=coverage,
     )
+
     plot_hemisphere_waypoints(
         hemisphere_waypoints,
         hemisphere_pos,

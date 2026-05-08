@@ -4,7 +4,7 @@ Computes intrinsic camera parameters from checkerboard images saved to disk.
 
 Reads all .jpg/.png images from a folder, detects checkerboard corners in each,
 and runs cv2.calibrateCamera to produce the camera matrix and distortion
-coefficients. Results are saved as camera_calib_intrinsic.npy into the
+coefficients. Results are saved as camera_calib_intrinsic.json into the
 same folder as the input images.
 
 Usage:
@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import glob
+import json
 import os
 
 import cv2 as cv
@@ -130,10 +131,13 @@ def main(
     print(f"\nMean reprojection error: {mean_error / len(objpoints):.4f} px")
 
     # Save next to the images
-    calib_file = os.path.join(data_path, "camera_calib_intrinsic.npy")
-    with open(calib_file, "wb") as f:
-        np.save(f, mtx)
-        np.save(f, dist)
+    calib_file = os.path.join(data_path, "camera_calib_intrinsic.json")
+    calib_data = {
+        "camera_matrix": mtx.tolist(),
+        "distortion_coefficients": dist.tolist(),
+    }
+    with open(calib_file, "w") as f:
+        json.dump(calib_data, f, indent=2)
     print(f"\nSaved intrinsic parameters to: {calib_file}")
 
 
@@ -161,13 +165,13 @@ Examples:
     parser.add_argument(
         "--corners_h",
         type=int,
-        default=8,
+        default=6,
         help="Number of internal corner intersections along the height (default: 8).",
     )
     parser.add_argument(
         "--corners_w",
         type=int,
-        default=5,
+        default=9,
         help="Number of internal corner intersections along the width (default: 5).",
     )
 

@@ -932,7 +932,7 @@ start_idx: {start_idx}
                             )
                         if frame is not None and scan_frame_dir is not None:
                             frame_path = str(
-                                scan_frame_dir / f"frame_{scan_frame_idx:05d}.jpg"
+                                scan_frame_dir / f"frame_{scan_frame_idx:05d}.png"
                             )
                             _frame_queue.put((frame, frame_path))
                             scan_frame_idx += 1

@@ -880,13 +880,15 @@ def move_along_trajectory(traj, start_time, simulator, station):
     traj_time = current_time - start_time
     traj_complete = traj_time > traj.end_time()
 
+    station_context = station.GetMyMutableContextFromRoot(
+        simulator.get_mutable_context()
+    )
     if not traj_complete:
         q_desired = traj.value(traj_time)
-        station_context = station.GetMyMutableContextFromRoot(
-            simulator.get_mutable_context()
-        )
         station.GetInputPort("iiwa.position").FixValue(station_context, q_desired)
     else:
+        q_final = traj.value(traj.end_time())
+        station.GetInputPort("iiwa.position").FixValue(station_context, q_final)
         print(colored("✓ Trajectory execution complete!", "green"))
 
     return traj_complete

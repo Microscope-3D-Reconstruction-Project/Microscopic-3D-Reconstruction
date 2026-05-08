@@ -4,15 +4,15 @@ from pydrake.all import RigidTransform, RotationMatrix
 
 # Configuration for different modes
 HARDWARE_CONFIG = {
-    "speed_factor": 1.0,
+    "speed_factor": 3.0,
     "max_joint_velocity_deg": 30.0,
     "vel_limits": np.full(7, 0.5),  # rad/s
     "acc_limits": np.full(7, 0.5),  # rad/s^2
 }
 
 SIMULATION_CONFIG = {
-    "speed_factor": 1.0,
-    "max_joint_velocity_deg": 30.0,
+    "speed_factor": 4.0,
+    "max_joint_velocity_deg": 60.0,
     "vel_limits": np.full(7, 0.5),  # rad/s
     "acc_limits": np.full(7, 0.5),  # rad/s^2
 }
@@ -49,8 +49,10 @@ DEFAULT_POSITION = np.deg2rad([-32.06, 56.57, 47.46, -115.28, -0.89, -70.31, -37
 
 # Hemisphere defaults
 HEMISPHERE_DIST = 0.8
-HEMISPHERE_RADIUS = 0.08
-HEMISPHERE_CENTER = np.array([0.761285, -0.002479, 0.363935])
+HEMISPHERE_RADIUS = 0.1
+HEMISPHERE_CENTER = np.array(
+    [0.7549282240004552, -0.0021437351436335153, 0.36326471659952675]
+)
 HEMISPHERE_Z = HEMISPHERE_CENTER[2]
 HEMISPHERE_ANGLE_DEG = 0.0
 COVERAGE = 1.0
