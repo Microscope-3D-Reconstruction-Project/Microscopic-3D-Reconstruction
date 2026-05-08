@@ -354,7 +354,7 @@ def main(
         draw_triad(
             meshcat,
             f"hemisphere_waypoint_{i}",
-            wp @ T_cam_to_tip,
+            wp,
             length=0.02,
             radius=0.001,
             opacity=0.5,
@@ -368,14 +368,42 @@ def main(
     failed_indices = []
     q_prev = default_position.copy()
 
+    # TEMP DEBUG: dump the offsets the solver computed
+    print(
+        colored(
+            f"\n[DEBUG] R_7M used by IK:\n{np.round(kinematics_solver.R_7M, 4)}",
+            "magenta",
+        )
+    )
+    print(
+        colored(
+            f"[DEBUG] p_7M_in_7 used by IK: {np.round(kinematics_solver.p_7M_in_7, 4)}",
+            "magenta",
+        )
+    )
+
     print(colored(f"\nPre-computing IK for {n} waypoints...", "cyan"))
     for i, wp in enumerate(hemisphere_waypoints):
         target_rot = wp.rotation().matrix()
         target_pos = wp.translation()
 
         Q = kinematics_solver.IK_for_microscope(target_rot, target_pos, psi=elbow_angle)
+        n_raw = Q.shape[0] if hasattr(Q, "shape") else len(Q)
         Q = filter_ik_solutions(
-            station, Q, target_rot, target_pos, joint_lower_limits, joint_upper_limits
+            station,
+            Q,
+            target_rot,
+            target_pos,
+            joint_lower_limits,
+            joint_upper_limits,
+            tip_frame_name="optical_center",
+        )
+        n_filt = Q.shape[0] if hasattr(Q, "shape") else len(Q)
+        print(
+            colored(
+                f"[DEBUG] wp {i}: raw IK = {n_raw}  →  after filter = {n_filt}",
+                "magenta",
+            )
         )
 
         if Q.shape[0] == 0:
@@ -683,14 +711,14 @@ def main(
             label = labels[scan_idx] if scan_idx < len(labels) else str(scan_idx)
             print(colored(f"\n── Waypoint {scan_idx}/{n - 1} ({label}) ──", "cyan"))
 
-            pose_target = hemisphere_waypoints[scan_idx] @ T_cam_to_tip
+            pose_target = hemisphere_waypoints[scan_idx]
             draw_triad(
                 meshcat, "next_scan_target", pose_target, length=0.1, radius=0.002
             )
 
-            eef_pose = internal_plant.GetFrameByName(
-                "microscope_tip_link"
-            ).CalcPoseInWorld(internal_plant_context)
+            eef_pose = internal_plant.GetFrameByName("optical_center").CalcPoseInWorld(
+                internal_plant_context
+            )
 
             hemisphere_ik_result["ready"] = False
             threading.Thread(

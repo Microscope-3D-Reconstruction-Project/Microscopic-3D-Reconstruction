@@ -2,8 +2,6 @@ import numpy as np
 
 from pydrake.all import RigidTransform, RotationMatrix
 
-from utils.planning import sphere_frame
-
 
 def generate_centering_waypoints(center, radius, hemisphere_axis=None):
     """
@@ -54,7 +52,18 @@ def generate_centering_waypoints(center, radius, hemisphere_axis=None):
     for d in directions:
         d = d / np.linalg.norm(d)
         point_world = np.asarray(center, dtype=float) + radius * d
-        rotation = RotationMatrix(sphere_frame(point_world, ha, center))
-        waypoints.append(RigidTransform(rotation, point_world))
+
+        # Build camera frame directly:
+        #   z  → inward (toward center), i.e. optical axis points at the object
+        #   x  → right direction on the tangent plane (already computed above)
+        #   y  → cross(z, x), completing a right-handed frame
+        # Using `right` as x instead of projected world_z gives a 90° offset
+        # compared to sphere_frame's default reference — no explicit rotation needed.
+        z_in = -d
+        x = right - np.dot(right, z_in) * z_in  # project right onto tangent plane
+        x /= np.linalg.norm(x)
+        y = np.cross(z_in, x)
+        R = np.column_stack([x, y, z_in])
+        waypoints.append(RigidTransform(RotationMatrix(R), point_world))
 
     return waypoints

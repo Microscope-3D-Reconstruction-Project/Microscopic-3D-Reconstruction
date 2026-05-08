@@ -324,7 +324,13 @@ def check_safety_constraints(
     return is_valid, violations
 
 
-def check_tip_position(station, q, target_pos, position_tolerance=1e-3):
+def check_tip_position(
+    station,
+    q,
+    target_pos,
+    position_tolerance=1e-3,
+    tip_frame_name="microscope_tip_link",
+):
     """
     Check if FK on the microscope tip matches target_pos.
 
@@ -342,7 +348,7 @@ def check_tip_position(station, q, target_pos, position_tolerance=1e-3):
     plant_context = plant.CreateDefaultContext()
     plant.SetPositions(plant_context, q)
     achieved_pos = (
-        plant.GetFrameByName("microscope_tip_link")
+        plant.GetFrameByName(tip_frame_name)
         .CalcPoseInWorld(plant_context)
         .translation()
     )
@@ -358,6 +364,7 @@ def filter_ik_solutions(
     target_pos,
     joint_lower_limits,
     joint_upper_limits,
+    tip_frame_name="microscope_tip_link",
 ):
     """
     Filter IK solutions based on safety constraints.
@@ -387,7 +394,9 @@ def filter_ik_solutions(
             station, trajectory_joint_poses
         )
 
-        matches_pos, position_error = check_tip_position(station, q, target_pos)
+        matches_pos, position_error = check_tip_position(
+            station, q, target_pos, tip_frame_name=tip_frame_name
+        )
 
         # if matches_pos:
         #     print(colored(f"  ✓ pos error: {position_error:.6f} m", "green"))

@@ -55,44 +55,31 @@ class KinematicsSolver:
         This is just how the IK is set up.
         """
 
-        # Get plant and context
         plant = station.get_internal_plant()
         context = station.get_internal_plant_context()
         joint6_frame = plant.GetFrameByName("iiwa_link_6")
-        tip_frame = plant.GetFrameByName("microscope_tip_link")
+        optical_center_frame = plant.GetFrameByName("optical_center")
         link7_frame = plant.GetFrameByName("iiwa_link_7")
 
-        # Get relevant transforms
+        # p_07: joint-6-in-URDF = joint-7-in-get_kin() convention
         p_07 = plant.CalcRelativeTransform(
             context, plant.world_frame(), joint6_frame
-        ).translation()  # joint 7 pos in URDF/get_kin() = joint 6 pos in SDF
+        ).translation()
         p_0M = plant.CalcRelativeTransform(
-            context, plant.world_frame(), tip_frame
+            context, plant.world_frame(), optical_center_frame
         ).translation()
         R_70 = (
             plant.CalcRelativeTransform(context, plant.world_frame(), link7_frame)
             .inverse()
             .rotation()
-        )  # joint 7 rot in URF/get_kin() = joint 7 rot in SDF
+        )
 
         p_7M = p_0M - p_07
-        p_7M_in_7 = R_70.multiply(
-            p_7M
-        )  # Vector from joint 6 to microscope tip in joint 7 frame. Called p_M7 because joint 6 is link 7 in get_kin()
+        p_7M_in_7 = R_70.multiply(p_7M)
 
-        # Debugging prints
-        # print("Microscope tip position in world:", p_0M)
-        # print("Joint 7 position in world:", p_07)
-        # print("Microscope mount offset p_7M:", p_7M)
-        # print("Microscope mount offset p_7M_in_7:", p_7M_in_7)
-        # Microscope offsets (NOTE: I just know these so I didn't bother calculating. Assuming that it won't change)
-        R_7M = np.array(
-            [
-                [-1, 0, 0],
-                [0, 1, 0],
-                [0, 0, -1],
-            ]
-        )
+        # R_7M: rotation from link-7 frame to optical_center frame, from Drake FK
+        T_7_oc = plant.CalcRelativeTransform(context, link7_frame, optical_center_frame)
+        R_7M = T_7_oc.rotation().matrix()
 
         return R_7M, p_7M_in_7
 
