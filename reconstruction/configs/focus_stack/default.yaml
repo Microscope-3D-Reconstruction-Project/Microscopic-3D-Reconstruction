@@ -9,12 +9,20 @@ scan_dirs: null               # optional list of specific scan dirs to process (
 output_dir: outputs
 experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 
+# ── Reference image selection ────────────────────────────────────────────────
+find_sharpest_image: true
+sharpness_score: laplacian    # laplacian | tenengrad
+sharpness_selection_mode: image  # image | window
+sharpness_window_weights: flat   # flat | gaussian
+sharpness_gaussian_sigma: null   # null = window_size / 6
+
 # ── Output paths ──────────────────────────────────────────────────────────────
 output_paths:
   output_dir: ${..output_dir}/${..experiment_name}/focus_stack
   images_subdir: focus_stacked_images
   masks_subdir: focus_stacked_masks
   depthmaps_subdir: depthmaps
+  sharpness_scores_subdir: sharpness_scores
   poses_filename: poses.json
   intrinsics_filename: intrinsics.json
 
