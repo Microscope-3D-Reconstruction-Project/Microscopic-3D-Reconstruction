@@ -22,3 +22,14 @@ directives:
     X_PC:
         translation: [0, 0, 0.007] # Set microscope tip location here
         rotation: !Rpy { deg: [0, 180, 180] }  # Roll, Pitch, Yaw in degrees
+- add_model:
+    name: camera_optical_center
+    file: package://iiwa_setup/camera_optical_center.sdf
+- add_weld:
+    parent: iiwa::iiwa_link_ee_kuka
+    child: camera_optical_center::optical_center
+    # X_PC = T_cam_to_flange from eye-in-hand calibration (translation in metres).
+    # Rerun microscope_scripts/eye_in_hand_calibration.py and paste new values here.
+    X_PC:
+        translation: [-0.056947, -0.054765, 0.077463]
+        rotation: !Rpy { deg: [1.6155, 0.6423, -90.4315] }

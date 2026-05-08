@@ -113,97 +113,6 @@ def _animate_configs(configs, station, station_context, simulator, meshcat):
             meshcat.SetSliderValue(f"Joint {i+1} (deg)", round(np.rad2deg(qi), 1))
 
 
-def _check_camera_arrival(internal_plant, q_final, expected_wp, label, idx):
-    # TEMPORARY SANITY CHECK
-    # Compares the camera_link world pose (from FK on q_final) against the waypoint
-    # produced by generate_centering_waypoints().
-    #
-    # We use a fresh plant context set to q_final rather than the simulator's
-    # internal_plant_context, because that context is only updated by AdvanceTo()
-    # (via DeclarePerStepUnrestrictedUpdateEvent) which hasn't run yet at the point
-    # this check is called.
-    #
-    # sphere_frame() defines the waypoint z-axis as the OUTWARD surface normal
-    # (pointing away from the hemisphere center, i.e. away from the object).
-    # The camera_link in Drake uses the standard camera convention where z points
-    # TOWARD the object (inward). These two are anti-parallel, so a ~180 deg
-    # rotation error is expected and is NOT a real calibration problem — it is a
-    # frame-convention mismatch. We detect this case and report it separately.
-    fresh_context = internal_plant.CreateDefaultContext()
-    internal_plant.SetPositions(fresh_context, q_final.flatten())
-    T_actual = internal_plant.GetFrameByName("camera_link").CalcPoseInWorld(
-        fresh_context
-    )
-    p_actual = T_actual.translation()
-    p_expected = expected_wp.translation()
-    pos_err_m = np.linalg.norm(p_actual - p_expected)
-
-    R_actual = T_actual.rotation().matrix()
-    R_expected = expected_wp.rotation().matrix()
-
-    # z-axes (optical axis for camera, outward normal for waypoint)
-    z_actual = R_actual[:, 2]  # camera_link +z in world
-    z_expected = R_expected[:, 2]  # waypoint +z in world (outward normal)
-    z_dot = float(np.dot(z_actual, z_expected))
-
-    # Full rotation error angle
-    R_err = R_actual @ R_expected.T
-    cos_angle = np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0)
-    rot_err_deg = np.rad2deg(np.arccos(cos_angle))
-
-    # If z-axes are anti-parallel (dot ≈ -1), the 180 deg error is purely the
-    # convention flip between outward-normal and camera-optical-axis. Check the
-    # residual error after accounting for that flip (rotate expected by 180 deg
-    # around its x-axis to flip z, then recompute).
-    R_flip_z = np.diag([1.0, -1.0, -1.0])  # 180 deg around x: flips y and z
-    R_expected_flipped = R_expected @ R_flip_z
-    R_err2 = R_actual @ R_expected_flipped.T
-    cos2 = np.clip((np.trace(R_err2) - 1.0) / 2.0, -1.0, 1.0)
-    rot_err_flipped_deg = np.rad2deg(np.arccos(cos2))
-
-    is_convention_flip = z_dot < -0.95
-
-    ok_pos = pos_err_m < 0.005
-    ok_rot = rot_err_flipped_deg < 2.0 if is_convention_flip else rot_err_deg < 2.0
-    pos_marker = colored("✓", "green") if ok_pos else colored("✗", "red")
-    rot_marker = colored("✓", "green") if ok_rot else colored("✗", "red")
-
-    print(
-        colored(
-            f"\n  [Sanity] Waypoint {idx} ({label}) — actual camera_link vs expected wp:",
-            "cyan",
-        )
-    )
-    print(f"    Expected pos      : {np.round(p_expected, 4)}")
-    print(f"    Actual   pos      : {np.round(p_actual,   4)}")
-    print(f"    {pos_marker} Position error    : {pos_err_m * 1000:.2f} mm")
-    print(
-        f"    z-axis dot product: {z_dot:+.4f}  "
-        f"({'anti-parallel — convention flip, NOT a real error' if is_convention_flip else 'aligned' if z_dot > 0.95 else 'unexpected'})"
-    )
-    if is_convention_flip:
-        print(
-            f"    {rot_marker} Rotation residual : {rot_err_flipped_deg:.3f} deg  "
-            f"(after removing the 180 deg convention flip)"
-        )
-    else:
-        print(f"    {rot_marker} Rotation error    : {rot_err_deg:.3f} deg")
-    if not ok_pos:
-        print(
-            colored(
-                "    ⚠ Large position error — likely T_cam_to_tip translation is wrong.",
-                "yellow",
-            )
-        )
-    if not ok_rot:
-        print(
-            colored(
-                "    ⚠ Large rotation residual — likely T_cam_to_tip rotation is wrong.",
-                "yellow",
-            )
-        )
-
-
 def main(
     use_hardware: bool,
     no_cam: bool = False,
@@ -305,70 +214,6 @@ def main(
         print("Translation: ")
         print(np.round(wp.translation(), 4))
 
-    # ==================================================================
-    # TEMPORARY SANITY CHECK — waypoint geometry
-    # ==================================================================
-    # Each waypoint sits at center + radius * direction, where direction is
-    # cos(45°)*ha ± sin(45°)*up  (for up/down)  or
-    # cos(45°)*ha ± sin(45°)*right  (for right/left).
-    #
-    # Because both directions in a pair share the cos(45°)*ha component,
-    # their dot product is cos²45 - sin²45 = 0 — they are PERPENDICULAR,
-    # NOT anti-parallel.  True opposites would have dot = -1.
-    # This check makes that explicit so you can decide if the geometry fits
-    # your ray-intersection needs.
-    print(colored("\n── Sanity check: waypoint geometry ──", "cyan"))
-
-    # 1. Distance from each waypoint to hemisphere_pos (should all equal hemisphere_radius)
-    print(
-        colored(
-            "  Distances from hemisphere_pos (expected = hemisphere_radius = "
-            f"{hemisphere_radius:.4f}):",
-            "white",
-        )
-    )
-    for i, (wp, label) in enumerate(zip(hemisphere_waypoints, labels)):
-        dist = np.linalg.norm(wp.translation() - hemisphere_pos)
-        ok = abs(dist - hemisphere_radius) < 1e-6
-        marker = colored("✓", "green") if ok else colored("✗", "red")
-        print(f"    {marker} [{i}] {label:8s}: {dist:.6f}")
-
-    # 2. Direction-vector dot products for paired viewpoints.
-    #    A dot product of -1 means truly opposite; 0 means perpendicular.
-    print(colored("  Direction-vector dot products for paired viewpoints:", "white"))
-    print(colored("  (dot = -1 → perfect opposites, dot = 0 → perpendicular)", "white"))
-    pairs = [("up", 1, "down", 2), ("right", 3, "left", 4)]
-    for label_a, idx_a, label_b, idx_b in pairs:
-        dir_a = hemisphere_waypoints[idx_a].translation() - hemisphere_pos
-        dir_b = hemisphere_waypoints[idx_b].translation() - hemisphere_pos
-        dir_a /= np.linalg.norm(dir_a)
-        dir_b /= np.linalg.norm(dir_b)
-        dot = float(np.dot(dir_a, dir_b))
-        if dot < -0.99:
-            verdict = colored("truly opposite", "green")
-        elif abs(dot) < 0.01:
-            verdict = colored("perpendicular — NOT opposite (see note above)", "yellow")
-        else:
-            verdict = colored(f"neither (dot={dot:.3f})", "red")
-        print(f"    {label_a:5s} vs {label_b:5s}: dot = {dot:+.4f}  →  {verdict}")
-
-    # 3. Check that paired viewpoints are equidistant from hemisphere_pos
-    print(colored("  Distance symmetry for paired viewpoints:", "white"))
-    for label_a, idx_a, label_b, idx_b in pairs:
-        dist_a = np.linalg.norm(
-            hemisphere_waypoints[idx_a].translation() - hemisphere_pos
-        )
-        dist_b = np.linalg.norm(
-            hemisphere_waypoints[idx_b].translation() - hemisphere_pos
-        )
-        match = abs(dist_a - dist_b) < 1e-6
-        marker = colored("✓", "green") if match else colored("✗", "red")
-        print(
-            f"    {marker} {label_a:5s} ({dist_a:.6f}) vs {label_b:5s} ({dist_b:.6f})"
-        )
-    print(colored("── end sanity check ──\n", "cyan"))
-    # ==================================================================
-
     plot_hemisphere_waypoints(
         hemisphere_waypoints,
         hemisphere_pos,
@@ -433,14 +278,36 @@ def main(
         builder, station.GetOutputPort("query_object"), station.internal_meshcat
     )
 
-    camera_frame = station.get_internal_plant().GetFrameByName("camera_link")
+    # camera_frame = station.get_internal_plant().GetFrameByName("camera_link")
+    # AddFrameTriadIllustration(
+    #     scene_graph=station.internal_station.get_scene_graph(),
+    #     plant=station.get_internal_plant(),
+    #     frame=camera_frame,
+    #     length=0.1,
+    #     radius=0.002,
+    #     name="camera_link",
+    # )
+
+    # flange_frame = station.get_internal_plant().GetFrameByName("iiwa_link_ee_kuka")
+    # AddFrameTriadIllustration(
+    #     scene_graph=station.internal_station.get_scene_graph(),
+    #     plant=station.get_internal_plant(),
+    #     frame=flange_frame,
+    #     length=0.1,
+    #     radius=0.002,
+    #     name="camera_link",
+    # )
+
+    # Calibrated optical center frame — auto-updates with robot motion in Meshcat
+    # because optical_center is a model link welded to the flange via the DMD.
+    optical_center_frame = station.get_internal_plant().GetFrameByName("optical_center")
     AddFrameTriadIllustration(
         scene_graph=station.internal_station.get_scene_graph(),
         plant=station.get_internal_plant(),
-        frame=camera_frame,
+        frame=optical_center_frame,
         length=0.1,
-        radius=0.002,
-        name="camera_link",
+        radius=0.001,
+        name="optical_center",
     )
 
     diagram = builder.Build()
@@ -1022,13 +889,6 @@ def main(
                 _q_at_scan = q_now.copy()
                 curr_idx = scan_idx
                 _at_scan_pose = True
-                _check_camera_arrival(
-                    internal_plant,
-                    traj.value(traj.end_time()),
-                    hemisphere_waypoints[scan_idx],
-                    labels[scan_idx],
-                    scan_idx,
-                )
                 state = State.AWAITING_JOG_CONFIRM
 
         # ------------------------------------------------------------------
@@ -1041,13 +901,6 @@ def main(
                 _q_at_scan = q_now.copy()
                 curr_idx = scan_idx
                 _at_scan_pose = True
-                _check_camera_arrival(
-                    internal_plant,
-                    traj.value(traj.end_time()),
-                    hemisphere_waypoints[scan_idx],
-                    labels[scan_idx],
-                    scan_idx,
-                )
                 state = State.AWAITING_JOG_CONFIRM
 
         # ------------------------------------------------------------------
