@@ -120,6 +120,7 @@ def main(
     live_view: bool = True,
     camera_source: int = CAMERA_SOURCE,
     wait: bool = False,
+    only_rrt: bool = False,
 ) -> None:
     cfg = get_config(use_hardware)
     speed_factor = cfg["speed_factor"]
@@ -149,6 +150,7 @@ def main(
     print(f"    start_idx     : {start_idx}")
     print(f"    live_view     : {live_view}")
     print(f"    camera_source : {camera_source}")
+    print(f"    only_rrt      : {only_rrt}")
     print(colored("  Hemisphere:", "white"))
     print(f"    center  : {HEMISPHERE_CENTER}")
     print(f"    radius  : {HEMISPHERE_RADIUS}")
@@ -728,29 +730,36 @@ def main(
                 internal_plant_context
             )
 
-            hemisphere_ik_result["ready"] = False
-            threading.Thread(
-                target=compute_hemisphere_traj_async,
-                args=(
-                    station,
-                    hemisphere_pos,
-                    hemisphere_radius,
-                    hemisphere_axis,
-                    eef_pose,
-                    pose_target,
-                    kinematics_solver,
-                    q_now,
-                    elbow_angle,
-                    hemisphere_ik_result,
-                    True,
-                    scan_idx,
-                    joint_lower_limits,
-                    joint_upper_limits,
-                    speed_factor,
-                    max_joint_velocities,
-                ),
-                daemon=True,
-            ).start()
+            if only_rrt:
+                hemisphere_ik_result["ready"] = True
+                hemisphere_ik_result["valid_joints"] = False
+                hemisphere_ik_result["valid_velocities"] = False
+                hemisphere_ik_result["valid_collisions"] = False
+                hemisphere_ik_result["trajectory"] = None
+            else:
+                hemisphere_ik_result["ready"] = False
+                threading.Thread(
+                    target=compute_hemisphere_traj_async,
+                    args=(
+                        station,
+                        hemisphere_pos,
+                        hemisphere_radius,
+                        hemisphere_axis,
+                        eef_pose,
+                        pose_target,
+                        kinematics_solver,
+                        q_now,
+                        elbow_angle,
+                        hemisphere_ik_result,
+                        True,
+                        scan_idx,
+                        joint_lower_limits,
+                        joint_upper_limits,
+                        speed_factor,
+                        max_joint_velocities,
+                    ),
+                    daemon=True,
+                ).start()
             state = State.COMPUTING_IKS
 
         # ------------------------------------------------------------------
@@ -1164,6 +1173,11 @@ Examples:
         action="store_true",
         help="Pause and wait for 'Move to Next' confirmation before each trajectory (default: execute immediately).",
     )
+    parser.add_argument(
+        "--only_rrt",
+        action="store_true",
+        help="Always use RRT* for inter-waypoint moves; never use hemisphere trajectory.",
+    )
 
     args = parser.parse_args()
     main(
@@ -1173,4 +1187,5 @@ Examples:
         live_view=not args.no_live_view,
         camera_source=args.camera_source,
         wait=args.wait,
+        only_rrt=args.only_rrt,
     )

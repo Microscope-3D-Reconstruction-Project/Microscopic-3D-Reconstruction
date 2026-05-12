@@ -250,6 +250,56 @@ def generate_hemisphere_waypoints(
     return [waypoints[i] for i in order]
 
 
+def correct_waypoints_for_principal_point(
+    waypoints, camera_K, image_width, image_height
+):
+    """
+    Rotate each waypoint's orientation so that the image center (W/2, H/2)
+    maps to the object rather than the principal point (cx, cy).
+
+    The correction is a small in-plane tilt computed from K⁻¹ applied to the
+    image-center pixel. Camera positions on the hemisphere are unchanged.
+
+    Args:
+        waypoints: list of RigidTransform (output of generate_hemisphere_waypoints)
+        camera_K: (3,3) intrinsics matrix
+        image_width, image_height: pixel dimensions of the image
+    Returns:
+        corrected list of RigidTransform
+    """
+    # Direction in camera frame corresponding to image center pixel
+    px = np.array([image_width / 2.0, image_height / 2.0, 1.0])
+    d_cam = np.linalg.inv(camera_K) @ px
+    d_cam /= np.linalg.norm(d_cam)
+
+    e_z = np.array([0.0, 0.0, 1.0])
+    angle = np.arccos(np.clip(np.dot(d_cam, e_z), -1.0, 1.0))
+
+    if angle < 1e-9:
+        return waypoints  # principal point == image center, no correction needed
+
+    axis = np.cross(d_cam, e_z)
+    axis /= np.linalg.norm(axis)
+
+    # Rodrigues: rotation mapping d_cam → e_z
+    K_skew = np.array(
+        [
+            [0, -axis[2], axis[1]],
+            [axis[2], 0, -axis[0]],
+            [-axis[1], axis[0], 0],
+        ]
+    )
+    R_offset = (
+        np.eye(3) + np.sin(angle) * K_skew + (1 - np.cos(angle)) * (K_skew @ K_skew)
+    )
+
+    corrected = []
+    for wp in waypoints:
+        R_new = RotationMatrix(wp.rotation().matrix() @ R_offset)
+        corrected.append(RigidTransform(R_new, wp.translation()))
+    return corrected
+
+
 def generate_poses_along_hemisphere(
     center, radius, pose_curr, pose_target, hemisphere_axis, speed_factor=1.0
 ):
@@ -474,7 +524,7 @@ def compute_optical_axis_traj_async(
     scan_idx=0,
     joint_lower_limits=None,
     joint_upper_limits=None,
-    distance: float = 0.025,
+    distance: float = 0.04,
     speed_factor: float = 1.0,
     max_joint_velocities=None,
 ):

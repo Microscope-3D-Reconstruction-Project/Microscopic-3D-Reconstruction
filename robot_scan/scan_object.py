@@ -40,6 +40,7 @@ from demo_config import (
     ELBOW_ANGLE,
     HEMISPHERE_CENTER,
     HEMISPHERE_RADIUS,
+    NUM_PICTURES,
     NUM_SCAN_POINTS,
     R_AXIS,
     T_CAM_TO_TIP,
@@ -68,6 +69,7 @@ from utils.kuka_geo_kin import KinematicsSolver
 from utils.planning import (
     compute_hemisphere_traj_async,
     compute_optical_axis_traj_async,
+    correct_waypoints_for_principal_point,
     generate_hemisphere_waypoints,
     move_along_trajectory,
     plot_trajectory_in_meshcat,
@@ -155,8 +157,7 @@ def main(
 
     coverage = 1.0
     distance_along_optical_axis = 0.04
-    # num_pictures = 30
-    num_pictures = 2
+    num_pictures = NUM_PICTURES
 
     elbow_angle = ELBOW_ANGLE
     default_position = DEFAULT_POSITION
@@ -232,6 +233,9 @@ start_idx: {start_idx}
         hemisphere_axis,
         num_scan_points=num_scan_points,
         coverage=coverage,
+    )
+    hemisphere_waypoints = correct_waypoints_for_principal_point(
+        hemisphere_waypoints, camera_K, image_width=1920, image_height=1080
     )
     plot_hemisphere_waypoints(
         hemisphere_waypoints,
@@ -983,7 +987,7 @@ start_idx: {start_idx}
                     # Save camera pose
                     if scan_frame_dir is not None:
                         cam_pose = internal_plant.GetFrameByName(
-                            "camera_link"
+                            "optical_center"
                         ).CalcPoseInWorld(internal_plant_context)
                         np.save(
                             str(scan_frame_dir / f"pose_{scan_frame_idx:05d}.npy"),

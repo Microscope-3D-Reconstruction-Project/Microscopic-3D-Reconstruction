@@ -53,14 +53,14 @@ DEFAULT_POSITION = np.deg2rad([-15.34, 56.02, 47.29, -117.17, 0.38, -70.58, -37.
 
 # Hemisphere defaults
 HEMISPHERE_DIST = 0.8
-HEMISPHERE_RADIUS = 0.16  # 0.16 for scan_object
+HEMISPHERE_RADIUS = 0.14  # 0.16 for scan_object
 HEMISPHERE_CENTER_PATH = Path(
-    "/home/rmineyev3/KUKA/Microscopic-3D-Reconstruction/microscope-data/object_centering/20260511_222140/predicted_center.npy"
+    "/home/rmineyev3/KUKA/Microscopic-3D-Reconstruction/microscope-data/object_centering/20260512_001211/predicted_center.npy"
 )
 HEMISPHERE_CENTER = np.load(HEMISPHERE_CENTER_PATH)
 
 # [0.7559199631817792, -0.01990998233782262, 0.35170674101999067]
-# HEMISPHERE_CENTER = np.array([0.7559, -0.0199, 0.4])
+# HEMISPHERE_CENTER = np.array([0.8049615172369357, -0.013845114818650316, 0.40098974165549933])
 
 HEMISPHERE_Z = HEMISPHERE_CENTER[2]
 HEMISPHERE_ANGLE_DEG = 0.0
@@ -68,6 +68,7 @@ COVERAGE = 1.0
 
 # Scan
 NUM_SCAN_POINTS = 146
+NUM_PICTURES = 30
 
 # Camera
 CAMERA_SOURCE = 4
