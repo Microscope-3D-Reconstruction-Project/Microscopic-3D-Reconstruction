@@ -232,14 +232,24 @@ def check_collisions(station, trajectory_joint_poses):
         if query_object.HasCollisions():
             violations.append(j)
 
-    is_valid = len(violations) == 0
+            # inspector = query_object.inspector()
+            # pairs = query_object.ComputePointPairPenetration()
+            # print(
+            #     colored(
+            #         f"⚠ Collision at waypoint {j} ({len(pairs)} pair(s)):", "yellow"
+            #     )
+            # )
+            # for p in pairs:
+            #     name_A = inspector.GetName(p.id_A)
+            #     name_B = inspector.GetName(p.id_B)
+            #     print(
+            #         colored(
+            #             f"    {name_A}  ↔  {name_B}   depth={p.depth * 1000:.2f} mm",
+            #             "yellow",
+            #         )
+            #     )
 
-    # if not is_valid:
-    #     print(
-    #         colored(
-    #             f"⚠ Found collision violations at {len(violations)} waypoints", "yellow"
-    #         )
-    #     )
+    is_valid = len(violations) == 0
 
     return is_valid, violations
 
@@ -398,9 +408,15 @@ def filter_ik_solutions(
             station, q, target_pos, tip_frame_name=tip_frame_name
         )
 
-        # if matches_pos:
-        #     print(colored(f"  ✓ pos error: {position_error:.6f} m", "green"))
-        # else:
+        # if not is_valid_joints:
+        #     print(colored(f"  ✗ joint limits violated: {len(violations_joints)} violations", "red"))
+
+        # if not is_valid_collisions:
+        #     print(colored(f"  ✗ collision detected", "red"))
+
+        # # if matches_pos:
+        # #     print(colored(f"  ✓ pos error: {position_error:.6f} m", "green"))
+        # if not matches_pos:
         #     print(colored(f"  ✗ pos error: {position_error:.6f} m", "red"))
 
         if is_valid_joints and is_valid_collisions and matches_pos:

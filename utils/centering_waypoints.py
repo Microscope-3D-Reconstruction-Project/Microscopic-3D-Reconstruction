@@ -36,8 +36,9 @@ def generate_centering_waypoints(center, radius, hemisphere_axis=None):
     right = np.cross(up, ha)
     right /= np.linalg.norm(right)
 
-    c = np.cos(np.pi / 4)
-    s = np.sin(np.pi / 4)
+    # Update these to adjust angle from center point
+    c = np.cos(np.pi / 3)
+    s = np.sin(np.pi / 3)
 
     # Unit direction vectors from center to each point on the sphere
     directions = [

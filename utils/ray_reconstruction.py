@@ -12,20 +12,21 @@ Coordinate conventions
 - T_world_cam is a Drake RigidTransform: world_T_camera.
 """
 
+import json
+
 import cv2
 import numpy as np
 
 from pydrake.all import Cylinder, Rgba, RigidTransform, RotationMatrix
 
-INTRINSICS_PATH = (
-    "/home/rmineyev3/KUKA/Microscopic-3D-Reconstruction/"
-    "microscope-data/calibrations/most_zoomed_out/camera_calib_intrinsic.npy"
-)
+from robot_scan.demo_config import INTRINSICS_PATH
 
 
 def load_intrinsics(path: str = INTRINSICS_PATH) -> np.ndarray:
-    """Load and return the 3×3 camera intrinsic matrix K."""
-    K = np.load(path)
+    """Load and return the 3×3 camera intrinsic matrix K from a JSON file."""
+    with open(path) as f:
+        data = json.load(f)
+    K = np.array(data["camera_matrix"], dtype=float)
     assert K.shape == (3, 3), f"Expected (3,3) intrinsic matrix, got {K.shape}"
     return K
 

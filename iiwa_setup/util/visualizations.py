@@ -47,6 +47,18 @@ def draw_triad(meshcat, name, transform, length=0.1, radius=0.005, opacity=1.0):
     meshcat.SetTransform(name, transform)
 
 
+def draw_wireframe_sphere(meshcat, name, position, radius, n=64, rgba=Rgba(1, 1, 0, 1)):
+    t = np.linspace(0, 2 * np.pi, n)
+    c, s = np.cos(t) * radius, np.sin(t) * radius
+    z = np.zeros_like(t)
+    for axis, pts in [
+        ("xy", np.vstack([c, s, z])),
+        ("xz", np.vstack([c, z, s])),
+        ("yz", np.vstack([z, c, s])),
+    ]:
+        meshcat.SetLine(f"{name}/{axis}", pts + np.array(position)[:, None], 2.0, rgba)
+
+
 def add_sphere(
     plant,
     position,
@@ -79,6 +91,13 @@ def add_sphere(
         f"{name}_visual",
         color,
     )
+    # draw_wireframe_sphere(
+    #     plant.GetMeshcat(),
+    #     f"{name}_visual",
+    #     position,
+    #     radius,
+    #     rgba=Rgba(*color),
+    # )
 
 
 def add_floor(plant):

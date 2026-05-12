@@ -222,7 +222,8 @@ def main(calib_dir: Path, checker_size: float, corners_h: int, corners_w: int):
         # Quality metric: AX = XB residual over all consecutive pose pairs.
         # A = relative flange motion (world frame), B = relative target motion
         # (camera frame). A good X minimises ||AX - XB||_F across all pairs.
-        ax_xb_errors = []
+        ax_xb_rot_errors = []
+        ax_xb_trans_errors_mm = []
         for i in range(n_pairs - 1):
             # Relative flange motion A: pose i → pose i+1 in world frame
             T_f2b_i = np.eye(4)
@@ -233,28 +234,33 @@ def main(calib_dir: Path, checker_size: float, corners_h: int, corners_w: int):
             T_f2b_j[:3, 3:] = t_flange2base_list[i + 1]
             A = np.linalg.inv(T_f2b_i) @ T_f2b_j
 
-            # Relative target motion B: target pose i → i+1 in camera frame
+            # AX=XB form (OpenCV convention):
+            #   inv(T_g2b_i) @ T_g2b_j @ X = X @ T_t2c_i @ inv(T_t2c_j)
+            # so B = T_t2c_i @ inv(T_t2c_j), NOT T_t2c_j @ inv(T_t2c_i).
             T_t2c_i = np.eye(4)
             T_t2c_i[:3, :3] = R_target2cam_list[i]
             T_t2c_i[:3, 3:] = t_target2cam_list[i]
             T_t2c_j = np.eye(4)
             T_t2c_j[:3, :3] = R_target2cam_list[i + 1]
             T_t2c_j[:3, 3:] = t_target2cam_list[i + 1]
-            B = T_t2c_j @ np.linalg.inv(T_t2c_i)
+            B = T_t2c_i @ np.linalg.inv(T_t2c_j)
 
             residual = A @ T_c2f - T_c2f @ B
-            ax_xb_errors.append(np.linalg.norm(residual, "fro"))
+            ax_xb_rot_errors.append(np.linalg.norm(residual[:3, :3], "fro"))
+            ax_xb_trans_errors_mm.append(np.linalg.norm(residual[:3, 3]) * 1000.0)
 
-        mean_residual = float(np.mean(ax_xb_errors))
+        mean_rot_residual = float(np.mean(ax_xb_rot_errors))
+        mean_trans_residual_mm = float(np.mean(ax_xb_trans_errors_mm))
         t_norm = np.linalg.norm(t_c2f)
 
-        if mean_residual < best_err:
-            best_err = mean_residual
+        if mean_rot_residual < best_err:
+            best_err = mean_rot_residual
             best_method = name
             best_T = T_c2f
 
         print(
-            f"  {name:12s}:  AX=XB residual = {mean_residual:.5f}  |  |t| = {t_norm*1000:.2f} mm"
+            f"  {name:12s}:  AX=XB rot residual = {mean_rot_residual:.5f}  |  "
+            f"trans residual = {mean_trans_residual_mm:.4f} mm  |  |t| = {t_norm*1000:.2f} mm"
         )
         print(f"               R =\n{np.round(R_c2f, 5)}")
         print(f"               t = {np.round(t_c2f.flatten()*1000, 3)} mm")
@@ -267,7 +273,7 @@ def main(calib_dir: Path, checker_size: float, corners_h: int, corners_w: int):
     t_best = best_T[:3, 3]
 
     print(
-        f"  Recommended method: {best_method}  (smallest AX=XB residual = {best_err:.5f})"
+        f"  Recommended method: {best_method}  (smallest AX=XB rot residual = {best_err:.5f})"
     )
     print(f"\n  T_cam_to_flange (4x4):\n{np.round(best_T, 6)}")
 

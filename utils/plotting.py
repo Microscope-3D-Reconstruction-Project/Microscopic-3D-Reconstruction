@@ -289,6 +289,94 @@ def plot_hemisphere_waypoints(
     )
 
 
+def _draw_hemisphere_surface(ax, center, radius):
+    u = np.linspace(0, 2 * np.pi, 40)
+    v = np.linspace(0, np.pi, 20)
+    xs = center[0] + radius * np.outer(np.cos(u), np.sin(v))
+    ys = center[1] + radius * np.outer(np.sin(u), np.sin(v))
+    zs = center[2] + radius * np.outer(np.ones_like(u), np.cos(v))
+    ax.plot_surface(xs, ys, zs, alpha=0.08, color="lightgray", edgecolor="none")
+
+
+def plot_hemisphere_ik_results(
+    waypoints,
+    failed_indices,
+    hemisphere_pos,
+    hemisphere_radius,
+    output_dir,
+):
+    """
+    Save two hemisphere plots after IK pre-computation:
+      hemisphere_waypoints_success.png  — reachable waypoints (green)
+      hemisphere_waypoints_failed.png   — failed waypoints (red)
+    """
+    from pathlib import Path
+
+    output_dir = Path(output_dir)
+    failed_set = set(failed_indices)
+    success_pts = np.array(
+        [wp.translation() for i, wp in enumerate(waypoints) if i not in failed_set]
+    )
+    failed_pts = (
+        np.array(
+            [wp.translation() for i, wp in enumerate(waypoints) if i in failed_set]
+        )
+        if failed_indices
+        else np.empty((0, 3))
+    )
+
+    center = np.asarray(hemisphere_pos)
+    radius = hemisphere_radius
+
+    for pts, label, color, fname in [
+        (
+            success_pts,
+            f"Reachable ({len(success_pts)})",
+            "green",
+            "hemisphere_waypoints_success.png",
+        ),
+        (
+            failed_pts,
+            f"Failed ({len(failed_pts)})",
+            "red",
+            "hemisphere_waypoints_failed.png",
+        ),
+    ]:
+        fig = plt.figure(figsize=(8, 7))
+        ax = fig.add_subplot(111, projection="3d")
+        _draw_hemisphere_surface(ax, center, radius)
+        ax.scatter(
+            center[0],
+            center[1],
+            center[2],
+            color="black",
+            s=60,
+            marker="x",
+            label="Center",
+            zorder=5,
+        )
+        if pts.shape[0] > 0:
+            ax.scatter(
+                pts[:, 0],
+                pts[:, 1],
+                pts[:, 2],
+                color=color,
+                s=18,
+                label=label,
+                depthshade=True,
+            )
+        ax.set_title(f"IK {label}")
+        ax.set_xlabel("X (m)")
+        ax.set_ylabel("Y (m)")
+        ax.set_zlabel("Z (m)")
+        ax.set_box_aspect([1, 1, 1])
+        ax.legend(loc="upper right", fontsize=8)
+        out = output_dir / fname
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(colored(f"✓ Saved → {out}", "cyan"))
+
+
 def plot_hemisphere_trajectory(
     trajectory_joint_poses,
     hemisphere_t,

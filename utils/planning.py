@@ -116,22 +116,28 @@ def sphere_frame(p, hemisphere_axis, center):
 
     p = np.asarray(p, dtype=float)
     center = np.asarray(center, dtype=float)
+    ha = np.asarray(hemisphere_axis, dtype=float)
+    ha = ha / np.linalg.norm(ha)
 
-    # Surface normal
-    z = p - center
+    # Optical axis points inward toward sphere center
+    z = center - p
     z_norm = np.linalg.norm(z)
     if z_norm < 1e-9:
         raise ValueError("Point cannot equal sphere center.")
     z = z / z_norm
 
-    g = np.array([0.0, 0.0, 1.0])
-    if np.dot(z, g) > 0.99:
-        g = np.array([0.0, 0.0, -1.0])
-    elif np.dot(z, g) < -0.99:
-        g = np.array([0.0, 0.0, 1.0])
+    # Build the same "right" reference used in generate_hemisphere_waypoints
+    # so roll framing is identical between waypoints and traversal path.
+    world_z = np.array([0.0, 0.0, 1.0])
+    if abs(np.dot(ha, world_z)) > 0.99:
+        world_z = np.array([0.0, 1.0, 0.0])
+    up = world_z - np.dot(world_z, ha) * ha
+    up = up / np.linalg.norm(up)
+    right = np.cross(up, ha)
+    right = right / np.linalg.norm(right)
 
-    # Project g onto tangent plane
-    x = g - np.dot(g, z) * z
+    # Project right onto tangent plane of z
+    x = right - np.dot(right, z) * z
     x_norm = np.linalg.norm(x)
     if x_norm < 1e-9:
         raise ValueError("Degenerate tangent direction.")
@@ -159,86 +165,89 @@ def generate_hemisphere_waypoints(
     """
     Generate N approximately uniformly distributed waypoints on a hemisphere.
 
+    Camera frame convention (matches generate_centering_waypoints):
+      z  → inward (optical axis points at the object)
+      x  → projected world-right on the tangent plane
+      y  → cross(z, x)
+
     Args:
         center: (3,) array of hemisphere center
         radius: float, hemisphere radius
-        hemisphere_axis: np.array of shape (3,), axis defining the hemisphere (e.g. [1, 0, 0] for x-axis hemisphere)
-        coverage: float between 0 and 1, fraction of hemisphere to cover (default 0.5 for half hemisphere)
+        hemisphere_axis: (3,) unit vector pointing from robot toward object
+        coverage: float in [0,1], fraction of hemisphere to cover
         num_scan_points: int, number of waypoints
     """
+    ha = np.asarray(hemisphere_axis, dtype=float)
+    ha /= np.linalg.norm(ha)
+
+    # Consistent reference "up" and "right" for the whole hemisphere
+    world_z = np.array([0.0, 0.0, 1.0])
+    if abs(np.dot(ha, world_z)) > 0.99:
+        world_z = np.array([0.0, 1.0, 0.0])
+    up = world_z - np.dot(world_z, ha) * ha
+    up /= np.linalg.norm(up)
+    right = np.cross(up, ha)
+    right /= np.linalg.norm(right)
 
     waypoints = []
     phi_golden = (1 + np.sqrt(5)) / 2  # golden ratio
 
-    # Normalize hemisphere_axis
-    hemisphere_axis = hemisphere_axis / np.linalg.norm(hemisphere_axis)
+    # Compute rotation that maps [0,0,1] → ha (for distributing points)
+    z_ref = np.array([0.0, 0.0, 1.0])
+    if np.allclose(ha, z_ref):
+        R_dist = np.eye(3)
+    elif np.allclose(ha, -z_ref):
+        R_dist = np.diag([1.0, -1.0, -1.0])
+    else:
+        rot_axis = np.cross(z_ref, ha)
+        rot_axis /= np.linalg.norm(rot_axis)
+        cos_a = np.dot(z_ref, ha)
+        sin_a = np.sqrt(max(0.0, 1.0 - cos_a**2))
+        K = np.array(
+            [
+                [0, -rot_axis[2], rot_axis[1]],
+                [rot_axis[2], 0, -rot_axis[0]],
+                [-rot_axis[1], rot_axis[0], 0],
+            ]
+        )
+        R_dist = np.eye(3) + sin_a * K + (1 - cos_a) * (K @ K)
 
     for k in range(num_scan_points):
-        # Generate points on canonical hemisphere (top at [0, 0, 1])
-        z_s = (
-            1 - k / (num_scan_points - 1) * coverage
-        )  # height from top (1) to equator (0)
-        r_xy = np.sqrt(1 - z_s**2)  # radius in xy-plane
-        theta = 2 * np.pi * k / phi_golden  # golden angle
+        z_s = 1 - k / (num_scan_points - 1) * coverage
+        r_xy = np.sqrt(max(0.0, 1 - z_s**2))
+        theta = 2 * np.pi * k / phi_golden
+        point_canonical = np.array([r_xy * np.cos(theta), r_xy * np.sin(theta), z_s])
+        d = R_dist @ point_canonical  # outward unit direction
+        point_world = np.asarray(center, dtype=float) + radius * d
 
-        x_s = r_xy * np.cos(theta)
-        y_s = r_xy * np.sin(theta)
+        # Camera frame: z points inward (toward center)
+        z_in = -d
+        x = right - np.dot(right, z_in) * z_in
+        x /= np.linalg.norm(x)
+        y = np.cross(z_in, x)
+        R = np.column_stack([x, y, z_in])
+        waypoints.append(RigidTransform(RotationMatrix(R), point_world))
 
-        # Point on unit hemisphere with top at [0, 0, 1]
-        point_canonical = np.array([x_s, y_s, z_s])
+    # Reorder by nearest-neighbour greedy tour starting from index 0.
+    # Golden-ratio order places consecutive points far apart on the sphere;
+    # nearest-neighbour order minimises arc length between successive hops,
+    # which reduces velocity demands and avoids RRT* fallbacks.
+    positions = np.array([wp.translation() for wp in waypoints])
+    visited = [False] * num_scan_points
+    order = [0]
+    visited[0] = True
+    for _ in range(num_scan_points - 1):
+        last = positions[order[-1]]
+        best_idx, best_dist = -1, np.inf
+        for j in range(num_scan_points):
+            if not visited[j]:
+                d = np.linalg.norm(positions[j] - last)
+                if d < best_dist:
+                    best_dist, best_idx = d, j
+        order.append(best_idx)
+        visited[best_idx] = True
 
-        # Compute rotation from [0, 0, 1] to hemisphere_axis
-        z_ref = np.array([0.0, 0.0, 1.0])
-
-        # If hemisphere_axis is close to [0, 0, 1], no rotation needed
-        if np.allclose(hemisphere_axis, z_ref):
-            point_rotated = point_canonical
-        # If hemisphere_axis is close to [0, 0, -1], rotate 180 deg around x-axis
-        elif np.allclose(hemisphere_axis, -z_ref):
-            point_rotated = np.array(
-                [point_canonical[0], -point_canonical[1], -point_canonical[2]]
-            )
-        else:
-            # Compute rotation axis (perpendicular to both vectors)
-            rotation_axis = np.cross(z_ref, hemisphere_axis)
-            rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
-
-            # Compute rotation angle
-            cos_angle = np.dot(z_ref, hemisphere_axis)
-            angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
-
-            # Rodrigues' rotation formula
-            K = np.array(
-                [
-                    [0, -rotation_axis[2], rotation_axis[1]],
-                    [rotation_axis[2], 0, -rotation_axis[0]],
-                    [-rotation_axis[1], rotation_axis[0], 0],
-                ]
-            )
-            R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
-
-            point_rotated = R @ point_canonical
-
-        # Scale by radius and translate by center
-        point_world = center + radius * point_rotated
-
-        # add custom rotation
-        additional_rotation = RotationMatrix(
-            np.array(
-                [
-                    [np.cos(-np.pi / 2), -np.sin(-np.pi / 2), 0],
-                    [np.sin(-np.pi / 2), np.cos(-np.pi / 2), 0],
-                    [0, 0, 1],
-                ]
-            )
-        )  # -90 deg rotation around z-axis
-
-        rotation = RotationMatrix(sphere_frame(point_world, hemisphere_axis, center))
-        # rotation = additional_rotation @ rotation
-        waypoint = RigidTransform(rotation, point_world)
-        waypoints.append(waypoint)
-
-    return waypoints
+    return [waypoints[i] for i in order]
 
 
 def generate_poses_along_hemisphere(
@@ -296,14 +305,10 @@ def generate_waypoints_down_optical_axis(
     t_final = (distance * 2 / 0.025) / speed_factor
 
     for i in range(num_points):
-        # Move down the optical axis (negative z direction in end-effector frame)
-        delta_z = (
-            -distance * i / num_points
-        )  # Move down 10 cm over the course of the path
-        delta_transform = RigidTransform(
-            np.array([0, 0, delta_z])
-        )  # No rotation change, just translation down z-axis
-        waypoint = pose_curr @ delta_transform  # Apply the delta to the current pose
+        # Move along +z (optical axis points inward toward object in current convention)
+        delta_z = distance * i / num_points
+        delta_transform = RigidTransform(np.array([0, 0, delta_z]))
+        waypoint = pose_curr @ delta_transform
         path_points.append(waypoint.translation())
         path_rots.append(waypoint.rotation().matrix())
 

@@ -34,7 +34,19 @@ import matplotlib
 matplotlib.use("Agg")
 import numpy as np
 
-from demo_config import get_config
+from demo_config import (
+    CAMERA_SOURCE,
+    DEFAULT_POSITION,
+    ELBOW_ANGLE,
+    HEMISPHERE_CENTER,
+    HEMISPHERE_RADIUS,
+    NUM_SCAN_POINTS,
+    R_AXIS,
+    T_CAM_TO_TIP,
+    V_AXIS,
+    get_config,
+)
+from drake.lcmt_iiwa_status import lcmt_iiwa_status
 from manipulation.station import LoadScenario
 from pydrake.all import (
     AddFrameTriadIllustration,
@@ -44,10 +56,9 @@ from pydrake.all import (
     DiagramBuilder,
     MeshcatVisualizer,
     Rgba,
-    RigidTransform,
-    RotationMatrix,
     Simulator,
 )
+from pydrake.lcm import DrakeLcm
 from pydrake.systems.primitives import VectorLogSink
 from termcolor import colored
 
@@ -61,7 +72,8 @@ from utils.planning import (
     move_along_trajectory,
     plot_trajectory_in_meshcat,
 )
-from utils.plotting import plot_hemisphere_waypoints
+from utils.plotting import plot_hemisphere_ik_results, plot_hemisphere_waypoints
+from utils.ray_reconstruction import load_intrinsics
 from utils.RRT import plot_rrt_raw_path_in_meshcat
 from utils.RRTStar import plan_rrt_star_async
 from utils.safety import filter_ik_solutions
@@ -103,19 +115,13 @@ def _animate_configs(
 def main(
     use_hardware: bool,
     no_cam: bool = False,
-    live_view: bool = False,
+    live_view: bool = True,
     skip_opt: bool = False,
     start_idx: int = 0,
-    no_wait: bool = False,
-    hemisphere_dist: float = 0.8,
-    hemisphere_angle_deg: float = 0.0,
-    hemisphere_radius: float | None = None,
-    hemisphere_z: float = 0.36,
-    hemisphere_pos_override: np.ndarray | None = None,
-    num_scan_points: int = 50,
+    wait: bool = False,
+    num_scan_points: int = NUM_SCAN_POINTS,
+    only_rrt: bool = False,
 ) -> None:
-    if hemisphere_radius is None:
-        hemisphere_radius = 0.08
     cfg = get_config(use_hardware)
     speed_factor = cfg["speed_factor"]
     max_joint_velocities = cfg["max_joint_velocities"]
@@ -143,62 +149,52 @@ def main(
     # Parameters
     # ==================================================================
 
-    # Hemisphere parameters
-    hemisphere_angle = np.deg2rad(hemisphere_angle_deg)
-    hemisphere_pos = np.array(
-        [
-            hemisphere_dist * np.cos(hemisphere_angle),
-            hemisphere_dist * np.sin(hemisphere_angle),
-            hemisphere_z,
-        ]
-    )
-    if hemisphere_pos_override is not None:
-        hemisphere_pos = np.asarray(hemisphere_pos_override, dtype=float)
-        print(
-            colored(
-                f"✓ hemisphere_pos overridden to {hemisphere_pos}",
-                "cyan",
-            )
-        )
-    hemisphere_axis = np.array(
-        [-np.cos(hemisphere_angle), -np.sin(hemisphere_angle), 0]
-    )
+    hemisphere_pos = np.asarray(HEMISPHERE_CENTER, dtype=float)
+    hemisphere_radius = HEMISPHERE_RADIUS
+    hemisphere_axis = np.array([-1.0, 0.0, 0.0])
 
-    # Scan point parameters
-    # num_scan_points passed in as argument
     coverage = 1.0
-    distance_along_optical_axis = 0.035
-    num_pictures = 30
+    distance_along_optical_axis = 0.04
+    # num_pictures = 30
+    num_pictures = 2
 
-    # Robot parameters
-    elbow_angle = np.deg2rad(135)
-    # default_position = np.deg2rad([88.65, 45.67, -26.69, -119.89, 9.39, -69.57, 15.66])
+    elbow_angle = ELBOW_ANGLE
+    default_position = DEFAULT_POSITION
+    r = R_AXIS
+    v = V_AXIS
+    T_cam_to_tip = T_CAM_TO_TIP
 
-    # 1) -63.3787
-    # 2: 52.1514,
-    # 3) 76.7329,
-    # 4) -121.5965,
-    # 5) 4.5253,
-    # 6) -52.4486,
-    # 7) 126.8792
-    default_position = np.array(
-        [
-            -1.10616644,
-            0.91021311,
-            1.3392409,
-            -2.1222599,
-            0.07898072,
-            -0.91539999,
-            2.21445949,
-        ]
-    )
+    # Load intrinsics for crosshair overlay
+    camera_K = load_intrinsics()
+    cx_full = int(camera_K[0, 2])
+    cy_full = int(camera_K[1, 2])
+    cx_disp = cx_full // 2
+    cy_disp = cy_full // 2
 
-    r = np.array([0, 0, -1])
-    v = np.array([0, 1, 0])
-
-    T_cam_to_tip = RigidTransform(
-        RotationMatrix(np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]))
-    )
+    print(colored("=" * 60, "cyan"))
+    print(colored("  scan_object — configuration", "cyan"))
+    print(colored("=" * 60, "cyan"))
+    print(colored("  Args:", "white"))
+    print(f"    use_hardware     : {use_hardware}")
+    print(f"    no_cam           : {no_cam}")
+    print(f"    live_view        : {live_view}")
+    print(f"    skip_opt         : {skip_opt}")
+    print(f"    start_idx        : {start_idx}")
+    print(f"    wait             : {wait}")
+    print(f"    only_rrt         : {only_rrt}")
+    print(f"    num_scan_points  : {num_scan_points}")
+    print(colored("  Hemisphere:", "white"))
+    print(f"    center  : {hemisphere_pos}")
+    print(f"    radius  : {hemisphere_radius}")
+    print(f"    axis    : {hemisphere_axis}")
+    print(colored("  Intrinsics (crosshair):", "white"))
+    print(f"    cx = {cx_full}  cy = {cy_full}  →  display ({cx_disp}, {cy_disp})")
+    print(colored("  Config:", "white"))
+    print(f"    speed_factor         : {speed_factor}")
+    print(f"    max_joint_vel (deg/s): {np.rad2deg(max_joint_velocities).round(2)}")
+    print(f"    vel_limits  (rad/s)  : {vel_limits.round(3)}")
+    print(f"    acc_limits  (rad/s²) : {acc_limits.round(3)}")
+    print(colored("=" * 60, "cyan"))
 
     # ==================================================================
     # Outputs setup
@@ -212,11 +208,8 @@ def main(
     # Write scan parameters to the session folder
     params_text = f"""\
 date: {date_str}
-hemisphere_dist: {hemisphere_dist}
-hemisphere_angle_deg: {hemisphere_angle_deg}
-hemisphere_radius: {hemisphere_radius}
-hemisphere_z: {hemisphere_z}
 hemisphere_pos: {hemisphere_pos.tolist()}
+hemisphere_radius: {hemisphere_radius}
 num_scan_points: {num_scan_points}
 coverage: {coverage}
 distance_along_optical_axis: {distance_along_optical_axis}
@@ -224,7 +217,7 @@ num_pictures: {num_pictures}
 elbow_angle_deg: {np.rad2deg(elbow_angle):.2f}
 use_hardware: {use_hardware}
 skip_opt: {skip_opt}
-no_wait: {no_wait}
+wait: {wait}
 start_idx: {start_idx}
 """
     (scans_base / "scan_params.txt").write_text(params_text)
@@ -250,6 +243,30 @@ start_idx: {start_idx}
     )
 
     # ==================================================================
+    # Read initial hardware position via LCM before building diagram
+    # ==================================================================
+    if use_hardware:
+        print(colored("Waiting for IIWA_STATUS from hardware...", "cyan"))
+        _lc = DrakeLcm()
+        _q_hardware = [None]
+
+        def _iiwa_handler(data: bytes) -> None:
+            msg = lcmt_iiwa_status.decode(data)
+            _q_hardware[0] = np.array(msg.joint_position_measured)
+
+        _lc.Subscribe("IIWA_STATUS", _iiwa_handler)
+        while _q_hardware[0] is None:
+            _lc.HandleSubscriptions(100)
+        initial_q = _q_hardware[0]
+        print(
+            colored(
+                f"✓ Hardware position: {np.rad2deg(initial_q).round(1)} deg", "cyan"
+            )
+        )
+    else:
+        initial_q = default_position
+
+    # ==================================================================
     # Diagram setup
     # ==================================================================
     builder = DiagramBuilder()
@@ -273,7 +290,7 @@ start_idx: {start_idx}
         state_logger.get_input_port(),
     )
 
-    dummy = builder.AddSystem(ConstantVectorSource(default_position))
+    dummy = builder.AddSystem(ConstantVectorSource(initial_q))
     builder.Connect(dummy.get_output_port(), station.GetInputPort("iiwa.position"))
 
     _ = MeshcatVisualizer.AddToBuilder(
@@ -287,7 +304,18 @@ start_idx: {start_idx}
         frame=camera_frame,
         length=0.1,
         radius=0.002,
+        opacity=0.1,
         name="camera_link",
+    )
+
+    optical_center_frame = station.get_internal_plant().GetFrameByName("optical_center")
+    AddFrameTriadIllustration(
+        scene_graph=station.internal_station.get_scene_graph(),
+        plant=station.get_internal_plant(),
+        frame=optical_center_frame,
+        length=0.1,
+        radius=0.001,
+        name="optical_center",
     )
 
     diagram = builder.Build()
@@ -334,7 +362,13 @@ start_idx: {start_idx}
 
         Q = kinematics_solver.IK_for_microscope(target_rot, target_pos, psi=elbow_angle)
         Q = filter_ik_solutions(
-            station, Q, target_rot, target_pos, joint_lower_limits, joint_upper_limits
+            station,
+            Q,
+            target_rot,
+            target_pos,
+            joint_lower_limits,
+            joint_upper_limits,
+            tip_frame_name="optical_center",
         )
 
         if Q.shape[0] == 0:
@@ -361,7 +395,22 @@ start_idx: {start_idx}
     np.savetxt(outputs_dir / "hemisphere_q_solutions.csv", q_array, delimiter=",")
     np.save(outputs_dir / "hemisphere_q_solutions.npy", q_array)
     np.save(outputs_dir / "hemisphere_q_failed_indices.npy", np.array(failed_indices))
-    print(colored(f"  Saved IK arrays to {outputs_dir}", "cyan"))
+
+    # Save waypoint positions and rotations
+    wp_positions = np.array([wp.translation() for wp in hemisphere_waypoints])
+    wp_rotations = np.array([wp.rotation().matrix() for wp in hemisphere_waypoints])
+    np.save(outputs_dir / "hemisphere_waypoints_positions.npy", wp_positions)
+    np.save(outputs_dir / "hemisphere_waypoints_rotations.npy", wp_rotations)
+    print(colored(f"  Saved IK arrays and waypoints to {outputs_dir}", "cyan"))
+
+    # Plot success / failed waypoints separately
+    plot_hemisphere_ik_results(
+        hemisphere_waypoints,
+        failed_indices,
+        hemisphere_pos,
+        hemisphere_radius,
+        outputs_dir,
+    )
 
     # Draw only reachable waypoints in Meshcat
     failed_set = set(failed_indices)
@@ -370,10 +419,10 @@ start_idx: {start_idx}
             draw_triad(
                 meshcat,
                 f"hemisphere_waypoint_{i}",
-                wp @ T_cam_to_tip,
+                wp,
                 length=0.02,
                 radius=0.001,
-                opacity=0.5,
+                opacity=0.1,
             )
 
     # ==================================================================
@@ -388,14 +437,14 @@ start_idx: {start_idx}
     _writer_thread = None
 
     if not no_cam:
-        camera = cv2.VideoCapture(4)
+        camera = cv2.VideoCapture(CAMERA_SOURCE)
         camera.set(cv2.CAP_PROP_FPS, 30)
         camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
         camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
         if not camera.isOpened():
             print(
                 colored(
-                    "⚠ Could not open camera device 4 – frames will NOT be saved",
+                    f"⚠ Could not open camera device {CAMERA_SOURCE} – frames will NOT be saved",
                     "yellow",
                 )
             )
@@ -518,14 +567,23 @@ start_idx: {start_idx}
         if R_WR_np is not None:
             meshcat.SetSliderValue("Current PSI (deg)", np.rad2deg(psi_rad))
 
-        # Live camera view
+        # Live camera view with crosshairs
         if live_view and not no_cam and _latest_frame_lock is not None:
             with _latest_frame_lock:
                 lf = _latest_frame.copy() if _latest_frame is not None else None
             if lf is not None:
-                cv2.imshow(
-                    "Live View", cv2.resize(lf, (lf.shape[1] // 2, lf.shape[0] // 2))
+                disp = cv2.resize(lf, (lf.shape[1] // 2, lf.shape[0] // 2))
+                # Red crosshair at calibrated principal point
+                cv2.drawMarker(
+                    disp, (cx_disp, cy_disp), (0, 0, 255), cv2.MARKER_CROSS, 40, 4
                 )
+                # Green crosshair at image center
+                img_cx = disp.shape[1] // 2
+                img_cy = disp.shape[0] // 2
+                cv2.drawMarker(
+                    disp, (img_cx, img_cy), (0, 255, 0), cv2.MARKER_CROSS, 40, 2
+                )
+                cv2.imshow("Live View", disp)
                 cv2.waitKey(1)
 
         # ------------------------------------------------------------------
@@ -626,35 +684,44 @@ start_idx: {start_idx}
                 scan_idx
             ]  # raw waypoint at the target — optical axis z-axis must not be flipped
 
-            # Launch hemisphere IK thread
-            hemisphere_ik_result["ready"] = False
-            traj_save_path = scans_base / "trajectory_data" / f"waypoint_{scan_idx:05d}"
-            threading.Thread(
-                target=compute_hemisphere_traj_async,
-                args=(
-                    station,
-                    hemisphere_pos,
-                    hemisphere_radius,
-                    hemisphere_axis,
-                    eef_pose,
-                    pose_target,
-                    kinematics_solver,
-                    q_now,
-                    elbow_angle,
-                    hemisphere_ik_result,
-                    True,
-                    scan_idx,
-                    joint_lower_limits,
-                    joint_upper_limits,
-                    speed_factor,
-                    max_joint_velocities,
-                ),
-                kwargs={
-                    "save_path": traj_save_path,
-                    "plot_save_dir": scans_base / f"scan{scan_idx:02d}",
-                },
-                daemon=True,
-            ).start()
+            # Launch hemisphere IK thread (skipped when --only_rrt)
+            if only_rrt:
+                hemisphere_ik_result["ready"] = True
+                hemisphere_ik_result["valid_joints"] = False
+                hemisphere_ik_result["valid_velocities"] = False
+                hemisphere_ik_result["valid_collisions"] = False
+                hemisphere_ik_result["trajectory"] = None
+            else:
+                hemisphere_ik_result["ready"] = False
+                traj_save_path = (
+                    scans_base / "trajectory_data" / f"waypoint_{scan_idx:05d}"
+                )
+                threading.Thread(
+                    target=compute_hemisphere_traj_async,
+                    args=(
+                        station,
+                        hemisphere_pos,
+                        hemisphere_radius,
+                        hemisphere_axis,
+                        eef_pose,
+                        pose_target,
+                        kinematics_solver,
+                        q_now,
+                        elbow_angle,
+                        hemisphere_ik_result,
+                        True,
+                        scan_idx,
+                        joint_lower_limits,
+                        joint_upper_limits,
+                        speed_factor,
+                        max_joint_velocities,
+                    ),
+                    kwargs={
+                        "save_path": traj_save_path,
+                        "plot_save_dir": scans_base / f"scan{scan_idx:02d}",
+                    },
+                    daemon=True,
+                ).start()
 
             if not skip_opt:
                 optical_axis_ik_result["ready"] = False
@@ -722,10 +789,7 @@ start_idx: {start_idx}
                     rgba=Rgba(0, 1, 0, 1),
                     name="hemisphere_traj",
                 )
-                if no_wait:
-                    trajectory_start_time = simulator.get_context().get_time()
-                    state = State.MOVING_ALONG_HEMISPHERE
-                else:
+                if wait:
                     print(
                         colored(
                             f"  ✓ Hemisphere trajectory ready for waypoint {scan_idx}.\n"
@@ -734,6 +798,9 @@ start_idx: {start_idx}
                         )
                     )
                     state = State.AWAITING_HEMISPHERE_CONFIRM
+                else:
+                    trajectory_start_time = simulator.get_context().get_time()
+                    state = State.MOVING_ALONG_HEMISPHERE
             else:
                 if not hemisphere_ik_result["valid_joints"]:
                     print(colored("  Hemisphere path: invalid joint values.", "yellow"))
@@ -803,11 +870,7 @@ start_idx: {start_idx}
                 rgba=Rgba(0, 1, 1, 1),
                 name="rrt_traj",
             )
-            if no_wait:
-                trajectory_start_time = simulator.get_context().get_time()
-                print(colored("  ✓ RRT*-Connect found path. Executing...", "green"))
-                state = State.MOVING_ALONG_RRT
-            else:
+            if wait:
                 print(
                     colored(
                         "  ✓ RRT*-Connect found path.\n"
@@ -816,6 +879,10 @@ start_idx: {start_idx}
                     )
                 )
                 state = State.AWAITING_RRT_CONFIRM
+            else:
+                trajectory_start_time = simulator.get_context().get_time()
+                print(colored("  ✓ RRT*-Connect found path. Executing...", "green"))
+                state = State.MOVING_ALONG_RRT
 
         # ------------------------------------------------------------------
         elif state == State.AWAITING_RRT_CONFIRM:
@@ -1107,47 +1174,20 @@ if __name__ == "__main__":
         help="Waypoint index to start scanning from (default: 0).",
     )
     parser.add_argument(
-        "--no_wait",
+        "--wait",
         action="store_true",
-        help="Execute trajectories immediately without waiting for 'Execute Path' button.",
-    )
-    parser.add_argument(
-        "--hemisphere_dist",
-        type=float,
-        default=0.8,
-        help="Distance from world origin to hemisphere center along the approach axis (default: 0.8).",
-    )
-    parser.add_argument(
-        "--hemisphere_angle",
-        type=float,
-        default=0.0,
-        help="Hemisphere approach angle in degrees, rotates center/axis in the XY plane (default: 0.0).",
-    )
-    parser.add_argument(
-        "--hemisphere_radius",
-        type=float,
-        default=None,
-        help="Radius of the hemisphere scan surface in meters (default: 0.08).",
-    )
-    parser.add_argument(
-        "--hemisphere_z",
-        type=float,
-        default=0.36,
-        help="Z height of the hemisphere center in world frame (default: 0.36).",
-    )
-    parser.add_argument(
-        "--hemisphere_pos",
-        type=float,
-        nargs=3,
-        default=None,
-        metavar=("X", "Y", "Z"),
-        help="Directly set hemisphere center position (overrides dist/angle/z).",
+        help="Pause and wait for 'Execute Path' confirmation before each trajectory (default: execute immediately).",
     )
     parser.add_argument(
         "--num_scan_points",
         type=int,
-        default=50,
-        help="Number of hemisphere scan points (default: 50).",
+        default=NUM_SCAN_POINTS,
+        help=f"Number of hemisphere scan points (default: {NUM_SCAN_POINTS}).",
+    )
+    parser.add_argument(
+        "--only_rrt",
+        action="store_true",
+        help="Always use RRT* for inter-waypoint moves; never use hemisphere trajectory.",
     )
     args = parser.parse_args()
     main(
@@ -1156,11 +1196,7 @@ if __name__ == "__main__":
         live_view=args.live_view,
         skip_opt=args.skip_opt,
         start_idx=args.start_idx,
-        no_wait=args.no_wait,
-        hemisphere_dist=args.hemisphere_dist,
-        hemisphere_angle_deg=args.hemisphere_angle,
-        hemisphere_radius=args.hemisphere_radius,
-        hemisphere_z=args.hemisphere_z,
-        hemisphere_pos_override=args.hemisphere_pos,
+        wait=args.wait,
         num_scan_points=args.num_scan_points,
+        only_rrt=args.only_rrt,
     )

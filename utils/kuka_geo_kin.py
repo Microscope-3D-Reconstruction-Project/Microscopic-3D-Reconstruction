@@ -74,12 +74,17 @@ class KinematicsSolver:
             .rotation()
         )
 
-        p_7M = p_0M - p_07
-        p_7M_in_7 = R_70.multiply(p_7M)
+        # SEW formulation's "frame 7" differs from Drake's iiwa_link_7 by a
+        # constant 180° rotation about z. Without this, IK solutions place the
+        # optical_center 180° rotated about z relative to the requested target.
+        # R_const = np.array([[0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]])
+        R_const = np.eye(3)
 
-        # R_7M: rotation from link-7 frame to optical_center frame, from Drake FK
+        p_7M = p_0M - p_07
+        p_7M_in_7 = R_const @ R_70.multiply(p_7M)
+
         T_7_oc = plant.CalcRelativeTransform(context, link7_frame, optical_center_frame)
-        R_7M = T_7_oc.rotation().matrix()
+        R_7M = R_const @ T_7_oc.rotation().matrix()
 
         return R_7M, p_7M_in_7
 

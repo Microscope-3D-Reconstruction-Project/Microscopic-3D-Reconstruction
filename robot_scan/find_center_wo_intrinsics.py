@@ -119,6 +119,7 @@ def main(
     start_idx: int = 0,
     live_view: bool = True,
     camera_source: int = CAMERA_SOURCE,
+    wait: bool = False,
 ) -> None:
     cfg = get_config(use_hardware)
     speed_factor = cfg["speed_factor"]
@@ -205,14 +206,14 @@ def main(
         hemisphere_axis,
     )
     labels = ["straight", "up", "down", "right", "left"]
-    print(colored("\n5 centering waypoints:", "cyan"))
-    for i, (wp, label) in enumerate(zip(hemisphere_waypoints, labels)):
-        # print(f"  [{i}] {label}: {np.round(wp.rotation().matrix(), 4)}, {np.round(wp.translation(), 4)}")
-        print(f"  [{i}] {label}:")
-        print("Rotation: ")
-        print(np.round(wp.rotation().matrix(), 4))
-        print("Translation: ")
-        print(np.round(wp.translation(), 4))
+    # print(colored("\n5 centering waypoints:", "cyan"))
+    # for i, (wp, label) in enumerate(zip(hemisphere_waypoints, labels)):
+    #     # print(f"  [{i}] {label}: {np.round(wp.rotation().matrix(), 4)}, {np.round(wp.translation(), 4)}")
+    #     print(f"  [{i}] {label}:")
+    #     print("Rotation: ")
+    #     print(np.round(wp.rotation().matrix(), 4))
+    #     print("Translation: ")
+    #     print(np.round(wp.translation(), 4))
 
     plot_hemisphere_waypoints(
         hemisphere_waypoints,
@@ -278,15 +279,16 @@ def main(
         builder, station.GetOutputPort("query_object"), station.internal_meshcat
     )
 
-    # camera_frame = station.get_internal_plant().GetFrameByName("camera_link")
-    # AddFrameTriadIllustration(
-    #     scene_graph=station.internal_station.get_scene_graph(),
-    #     plant=station.get_internal_plant(),
-    #     frame=camera_frame,
-    #     length=0.1,
-    #     radius=0.002,
-    #     name="camera_link",
-    # )
+    camera_frame = station.get_internal_plant().GetFrameByName("camera_link")
+    AddFrameTriadIllustration(
+        scene_graph=station.internal_station.get_scene_graph(),
+        plant=station.get_internal_plant(),
+        frame=camera_frame,
+        length=0.1,
+        radius=0.001,
+        name="camera_link",
+        opacity=0.1,
+    )
 
     # flange_frame = station.get_internal_plant().GetFrameByName("iiwa_link_ee_kuka")
     # AddFrameTriadIllustration(
@@ -327,17 +329,6 @@ def main(
     meshcat.AddButton("Preview RRT* Smooth")
     meshcat.AddButton("Reset")
 
-    JOG_BUTTONS = {
-        "Jog Right (camera frame)": np.array([1.0, 0.0, 0.0]),
-        "Jog Left (camera frame)": np.array([-1.0, 0.0, 0.0]),
-        "Jog Down (camera frame)": np.array([0.0, 1.0, 0.0]),
-        "Jog Up (camera frame)": np.array([0.0, -1.0, 0.0]),
-        "Jog Forward (camera frame)": np.array([0.0, 0.0, 1.0]),
-        "Jog Backward (camera frame)": np.array([0.0, 0.0, -1.0]),
-    }
-    for name in JOG_BUTTONS:
-        meshcat.AddButton(name)
-
     joint_lower_limits = station.get_internal_plant().GetPositionLowerLimits()
     joint_upper_limits = station.get_internal_plant().GetPositionUpperLimits()
     for i in range(7):
@@ -368,19 +359,19 @@ def main(
     failed_indices = []
     q_prev = default_position.copy()
 
-    # TEMP DEBUG: dump the offsets the solver computed
-    print(
-        colored(
-            f"\n[DEBUG] R_7M used by IK:\n{np.round(kinematics_solver.R_7M, 4)}",
-            "magenta",
-        )
-    )
-    print(
-        colored(
-            f"[DEBUG] p_7M_in_7 used by IK: {np.round(kinematics_solver.p_7M_in_7, 4)}",
-            "magenta",
-        )
-    )
+    # # TEMP DEBUG: dump the offsets the solver computed
+    # print(
+    #     colored(
+    #         f"\n[DEBUG] R_7M used by IK:\n{np.round(kinematics_solver.R_7M, 4)}",
+    #         "magenta",
+    #     )
+    # )
+    # print(
+    #     colored(
+    #         f"[DEBUG] p_7M_in_7 used by IK: {np.round(kinematics_solver.p_7M_in_7, 4)}",
+    #         "magenta",
+    #     )
+    # )
 
     print(colored(f"\nPre-computing IK for {n} waypoints...", "cyan"))
     for i, wp in enumerate(hemisphere_waypoints):
@@ -399,12 +390,12 @@ def main(
             tip_frame_name="optical_center",
         )
         n_filt = Q.shape[0] if hasattr(Q, "shape") else len(Q)
-        print(
-            colored(
-                f"[DEBUG] wp {i}: raw IK = {n_raw}  →  after filter = {n_filt}",
-                "magenta",
-            )
-        )
+        # print(
+        #     colored(
+        #         f"[DEBUG] wp {i}: raw IK = {n_raw}  →  after filter = {n_filt}",
+        #         "magenta",
+        #     )
+        # )
 
         if Q.shape[0] == 0:
             print(colored(f"  [{i}] FAIL: no valid IK solutions", "yellow"))
@@ -503,7 +494,26 @@ def main(
     num_preview_raw_clicks = 0
     num_preview_smooth_clicks = 0
     num_reset_clicks = 0
-    jog_click_counts = {name: 0 for name in JOG_BUTTONS}
+    _kbd_next = False  # set True by Enter key; consumed by next_clicked()
+
+    def next_clicked() -> bool:
+        nonlocal num_move_to_next_clicks, _kbd_next
+        btn = meshcat.GetButtonClicks("Move to Next") > num_move_to_next_clicks
+        if btn or _kbd_next:
+            if btn:
+                num_move_to_next_clicks += 1
+            _kbd_next = False
+            return True
+        return False
+
+    KEY_JOG_MAP = {
+        81: (np.array([-1.0, 0.0, 0.0]), "left"),  # ← arrow
+        83: (np.array([1.0, 0.0, 0.0]), "right"),  # → arrow
+        82: (np.array([0.0, -1.0, 0.0]), "up"),  # ↑ arrow
+        84: (np.array([0.0, 1.0, 0.0]), "down"),  # ↓ arrow
+        ord("["): (np.array([0.0, 0.0, -1.0]), "backward"),
+        ord("]"): (np.array([0.0, 0.0, 1.0]), "forward"),
+    }
 
     MOVING_STATES = {
         State.COMPUTING_MOVE_TO_START,
@@ -575,14 +585,11 @@ def main(
                     4,
                 )
                 cv2.imshow("Live View", disp)
-                cv2.waitKey(1)
-
-        # ------------------------------------------------------------------
-        # Jog buttons — active in any non-moving state
-        if state not in MOVING_STATES:
-            for btn_name, direction in JOG_BUTTONS.items():
-                if meshcat.GetButtonClicks(btn_name) > jog_click_counts[btn_name]:
-                    jog_click_counts[btn_name] += 1
+                cv2.setWindowTitle("Live View", "Live View  —  arrows/[/] to jog")
+                key = cv2.waitKey(1)
+                key_char = key & 0xFF
+                if key_char in KEY_JOG_MAP and state not in MOVING_STATES:
+                    direction, label = KEY_JOG_MAP[key_char]
                     q_des = try_jog_tip(
                         station,
                         q_now,
@@ -598,7 +605,9 @@ def main(
                             station_context, q_des
                         )
                         _jog_target_q = q_des
-                        print(colored(f"  Jogged {btn_name[4:]}", "cyan"))
+                        print(colored(f"  [kbd] Jogged {label}", "cyan"))
+                if key_char == 13:  # Enter — triggers "Move to Next"
+                    _kbd_next = True
 
         # Reset button — available from any non-moving state
         if state not in MOVING_STATES:
@@ -623,10 +632,9 @@ def main(
 
         # ------------------------------------------------------------------
         if state == State.WAITING_TO_GO_TO_START:
-            if meshcat.GetButtonClicks("Move to Next") <= num_move_to_next_clicks:
+            if not next_clicked():
                 simulator.AdvanceTo(simulator.get_context().get_time() + 0.01)
                 continue
-            num_move_to_next_clicks += 1
 
             first_valid = next(
                 (i for i in range(n) if not np.isnan(q_array[i]).any()), None
@@ -764,8 +772,18 @@ def main(
                     rgba=Rgba(0, 1, 0, 1),
                     name="hemisphere_traj",
                 )
-                trajectory_start_time = simulator.get_context().get_time()
-                state = State.MOVING_ALONG_HEMISPHERE
+                if wait:
+                    print(
+                        colored(
+                            f"  ✓ Hemisphere trajectory ready.\n"
+                            "    Press 'Move to Next' or Enter to execute.",
+                            "green",
+                        )
+                    )
+                    state = State.AWAITING_HEMISPHERE_CONFIRM
+                else:
+                    trajectory_start_time = simulator.get_context().get_time()
+                    state = State.MOVING_ALONG_HEMISPHERE
             else:
                 if not hemisphere_ik_result["valid_joints"]:
                     print(colored("  Hemisphere path: invalid joint values.", "yellow"))
@@ -780,9 +798,7 @@ def main(
 
         # ------------------------------------------------------------------
         elif state == State.AWAITING_HEMISPHERE_CONFIRM:
-            execute = meshcat.GetButtonClicks("Move to Next") > num_move_to_next_clicks
-            if execute:
-                num_move_to_next_clicks += 1
+            if next_clicked():
                 if _q_at_scan is not None and np.any(
                     np.abs(q_now - _q_at_scan) > 0.005
                 ):
@@ -849,14 +865,19 @@ def main(
                 rgba=Rgba(0, 1, 1, 1),
                 name="rrt_traj",
             )
-            print(
-                colored(
-                    "  ✓ RRT*-Connect found path.\n"
-                    "    Press 'Preview RRT* Raw', 'Preview RRT* Smooth', or 'Move to Next'.",
-                    "green",
+            if wait:
+                print(
+                    colored(
+                        "  ✓ RRT*-Connect found path.\n"
+                        "    Press 'Preview RRT* Raw', 'Preview RRT* Smooth', or 'Move to Next' / Enter.",
+                        "green",
+                    )
                 )
-            )
-            state = State.AWAITING_RRT_CONFIRM
+                state = State.AWAITING_RRT_CONFIRM
+            else:
+                print(colored("  ✓ RRT*-Connect found path. Executing...", "green"))
+                trajectory_start_time = simulator.get_context().get_time()
+                state = State.MOVING_ALONG_RRT
 
         # ------------------------------------------------------------------
         elif state == State.AWAITING_RRT_CONFIRM:
@@ -867,7 +888,7 @@ def main(
                 meshcat.GetButtonClicks("Preview RRT* Smooth")
                 > num_preview_smooth_clicks
             )
-            execute = meshcat.GetButtonClicks("Move to Next") > num_move_to_next_clicks
+            execute = next_clicked()
 
             if preview_raw:
                 num_preview_raw_clicks += 1
@@ -887,7 +908,6 @@ def main(
                 )
                 print(colored("  ✓ Smooth preview done.", "cyan"))
             elif execute:
-                num_move_to_next_clicks += 1
                 if _q_at_scan is not None and np.any(
                     np.abs(q_now - _q_at_scan) > 0.005
                 ):
@@ -948,13 +968,12 @@ def main(
         # ------------------------------------------------------------------
         elif state == State.AWAITING_JOG_CONFIRM:
             # Jog until object is centred on crosshair, then record
-            if meshcat.GetButtonClicks("Move to Next") > num_move_to_next_clicks:
-                num_move_to_next_clicks += 1
+            if next_clicked():
                 T_world_cam = internal_plant.GetFrameByName(
-                    "camera_link"
+                    "optical_center"
                 ).CalcPoseInWorld(internal_plant_context)
                 origin = T_world_cam.translation()
-                # Optical axis = camera +z rotated to world frame
+                # Optical axis = optical_center +z rotated to world frame
                 direction = T_world_cam.rotation().matrix()[:, 2]
                 direction = direction / np.linalg.norm(direction)
                 print_ray(origin, direction, scan_idx=curr_idx)
@@ -1092,7 +1111,6 @@ def main(
         "Preview RRT* Raw",
         "Preview RRT* Smooth",
         "Reset",
-        *JOG_BUTTONS,
     ]:
         meshcat.DeleteButton(btn)
     for i in range(7):
@@ -1141,6 +1159,11 @@ Examples:
         default=CAMERA_SOURCE,
         help="Camera device number.",
     )
+    parser.add_argument(
+        "--wait",
+        action="store_true",
+        help="Pause and wait for 'Move to Next' confirmation before each trajectory (default: execute immediately).",
+    )
 
     args = parser.parse_args()
     main(
@@ -1149,4 +1172,5 @@ Examples:
         start_idx=args.start_idx,
         live_view=not args.no_live_view,
         camera_source=args.camera_source,
+        wait=args.wait,
     )

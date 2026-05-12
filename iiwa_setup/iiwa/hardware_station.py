@@ -226,31 +226,31 @@ class InternalStationDiagram(Diagram):
 
         if self.hemisphere_pos is not None:
             wall_pos = [
-                self.hemisphere_pos[0] + 0.05,
+                self.hemisphere_pos[0] + 0.02,
                 self.hemisphere_pos[1],
                 self.hemisphere_pos[2],
             ]
             add_wall(
                 self._plant,
-                wall_width=0.125,
+                wall_width=0.325,
                 X_WF=RigidTransform(RotationMatrix(), wall_pos),
             )
 
-            add_sphere(
-                self._plant,
-                name="scan_sphere",
-                position=self.hemisphere_pos,
-                radius=self.hemisphere_radius,
-                color=[1.0, 1.0, 0.0, 0.1],
-                collision=False,
-            )
+            # add_sphere(
+            #     self._plant,
+            #     name="scan_sphere",
+            #     position=self.hemisphere_pos,
+            #     radius=self.hemisphere_radius,
+            #     color=[1.0, 1.0, 1.0, 0.1],
+            #     collision=False,
+            # )
 
             add_sphere(
                 self._plant,
                 name="collision_sphere",
                 position=self.hemisphere_pos,
-                radius=self.hemisphere_radius - 0.01,
-                color=[0, 0, 0, 0.0],
+                radius=self.hemisphere_radius - 0.035,
+                color=[1.0, 1.0, 1.0, 0.2],
                 collision=False,
             )
 
@@ -339,23 +339,23 @@ class InternalStationDiagram(Diagram):
         if self.hemisphere_pos is not None:
             add_wall(
                 self._optimization_plant,
-                wall_width=0.125,
+                wall_width=0.325,
                 X_WF=RigidTransform(RotationMatrix(), wall_pos),
             )
 
-            add_sphere(
-                self._optimization_plant,
-                name="scan_sphere",
-                position=self.hemisphere_pos,
-                radius=self.hemisphere_radius,
-                collision=False,
-            )
+            # add_sphere(
+            #     self._optimization_plant,
+            #     name="scan_sphere",
+            #     position=self.hemisphere_pos,
+            #     radius=self.hemisphere_radius,
+            #     collision=False,
+            # )
 
             add_sphere(
                 self._optimization_plant,
                 name="collision_sphere",
                 position=self.hemisphere_pos,
-                radius=self.hemisphere_radius - 0.01,
+                radius=self.hemisphere_radius - 0.035,
                 collision=True,
             )
 
