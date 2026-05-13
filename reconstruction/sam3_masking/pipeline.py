@@ -15,6 +15,7 @@ from .appearance import (
 )
 from .io_utils import (
     save_bbox_visualization,
+    save_contour_visualization,
     save_outputs,
     save_pair_bbox_visualization,
     write_appearance_diagnostics,
@@ -95,9 +96,13 @@ class Sam3MaskingPipeline:
 
         print(f"Bootstrapping threshold mask from: {os.path.basename(bootstrap_path)}")
         bootstrap_image = Image.open(bootstrap_path).convert("RGB")
-        bootstrap_mask, num_components = create_foreground_mask(
+        (
+            bootstrap_mask,
+            num_components,
+            bootstrap_contours,
+            bootstrap_hull,
+        ) = create_foreground_mask(
             image_rgb=bootstrap_image,
-            black_threshold=args.black_threshold,
             min_contour_area=args.min_contour_area,
             morph_kernel_size=args.morph_kernel_size,
             keep_largest=True,
@@ -136,6 +141,13 @@ class Sam3MaskingPipeline:
             output_dir=threshold_bbox_images_dir,
             base_name=f"{bootstrap_base_name}_threshold_prompt",
             color=args.overlay_color,
+        )
+        save_contour_visualization(
+            image=bootstrap_image,
+            contours=bootstrap_contours,
+            hull=bootstrap_hull,
+            output_dir=threshold_bbox_images_dir,
+            base_name=bootstrap_base_name,
         )
         write_bootstrap_debug_metadata(
             output_dir=args.output_dir,

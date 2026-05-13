@@ -11,7 +11,6 @@ class Sam3MaskingConfig:
     random_seed: int = 0
     masks_subdir: str = "masks"
 
-    black_threshold: int = 20
     min_contour_area: float = 100.0
     morph_kernel_size: int = 5
     bootstrap_stem: str = "scan00"
@@ -73,7 +72,6 @@ def build_config(cfg_raw: DictConfig) -> Sam3MaskingConfig:
         output_dir=output_dir,
         random_seed=cfg["random_seed"],
         masks_subdir=output_paths["masks_subdir"],
-        black_threshold=bootstrap["black_threshold"],
         min_contour_area=bootstrap["min_contour_area"],
         morph_kernel_size=bootstrap["morph_kernel_size"],
         bootstrap_stem=bootstrap["bootstrap_stem"],

@@ -54,6 +54,20 @@ def save_outputs(
     print(f"  Saved overlay image: {overlay_out_path}")
 
 
+def save_contour_visualization(image, contours, hull, output_dir, base_name):
+    """Save a debug image showing all contours (cyan) and the selected convex hull (green)."""
+    import cv2
+
+    vis = np.array(image.convert("RGB"))
+    cv2.drawContours(vis, contours, -1, (0, 255, 255), 2)  # all contours: cyan
+    if hull is not None:
+        cv2.drawContours(vis, [hull], -1, (0, 255, 0), 3)  # selected hull: green
+    out_path = os.path.join(output_dir, f"{base_name}_contours.png")
+    os.makedirs(output_dir, exist_ok=True)
+    Image.fromarray(vis).save(out_path, format="PNG")
+    print(f"  Saved contour visualization: {out_path}")
+
+
 def save_bbox_visualization(image, bbox, output_dir, base_name, color=(0, 255, 0)):
     """Save an image with the prompt bbox drawn on top."""
     bbox_image = image.copy()

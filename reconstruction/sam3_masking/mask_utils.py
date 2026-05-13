@@ -11,58 +11,51 @@ VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 def create_foreground_mask(
     image_rgb,
-    black_threshold,
     min_contour_area,
     morph_kernel_size,
     keep_largest,
 ):
-    """Segment non-black foreground with thresholding and connected components."""
+    """Segment foreground using Otsu thresholding, contour detection, and convex hull.
+
+    Uses Otsu's method to automatically find the binary threshold, then finds
+    all contours, selects the one whose centroid is closest to the image center,
+    and returns its convex hull as the mask together with all contours for debug
+    visualization.
+    """
     image_np = np.array(image_rgb)
-    hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+    h, w = image_np.shape[:2]
+    cx, cy = w / 2.0, h / 2.0
 
-    value_mask = hsv[..., 2] > black_threshold
-    color_mask = np.max(image_np, axis=2) > black_threshold
-    threshold_mask = np.logical_or(value_mask, color_mask).astype(np.uint8) * 255
+    gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     if morph_kernel_size > 0:
         kernel = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (morph_kernel_size, morph_kernel_size)
         )
-        threshold_mask = cv2.morphologyEx(threshold_mask, cv2.MORPH_OPEN, kernel)
-        threshold_mask = cv2.morphologyEx(threshold_mask, cv2.MORPH_CLOSE, kernel)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
 
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
-        threshold_mask, connectivity=8
+    all_contours, _ = cv2.findContours(
+        binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
+    contours = [c for c in all_contours if cv2.contourArea(c) >= min_contour_area]
 
-    if num_labels <= 1:
-        return np.zeros(threshold_mask.shape, dtype=bool), 0
+    if not contours:
+        return np.zeros((h, w), dtype=bool), 0, list(all_contours), None
 
-    component_ids = [
-        label_id
-        for label_id in range(1, num_labels)
-        if stats[label_id, cv2.CC_STAT_AREA] >= min_contour_area
-    ]
+    def _centroid_dist(c):
+        M = cv2.moments(c)
+        if M["m00"] == 0:
+            return float("inf")
+        return (M["m10"] / M["m00"] - cx) ** 2 + (M["m01"] / M["m00"] - cy) ** 2
 
-    if keep_largest and component_ids:
-        component_ids = [
-            max(component_ids, key=lambda label_id: stats[label_id, cv2.CC_STAT_AREA])
-        ]
+    best = min(contours, key=_centroid_dist)
+    hull = cv2.convexHull(best)
 
-    component_mask = np.isin(labels, component_ids)
-    if not component_mask.any():
-        return np.zeros(threshold_mask.shape, dtype=bool), 0
-
-    if morph_kernel_size > 0:
-        kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (morph_kernel_size, morph_kernel_size)
-        )
-        component_mask = cv2.morphologyEx(
-            component_mask.astype(np.uint8) * 255, cv2.MORPH_CLOSE, kernel
-        )
-        component_mask = component_mask > 0
-
-    return component_mask, len(component_ids)
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.drawContours(mask, [hull], -1, 255, thickness=cv2.FILLED)
+    return mask > 0, 1, contours, hull
 
 
 def get_mask_bbox(mask, padding=0):
