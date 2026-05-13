@@ -38,8 +38,8 @@ experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 # ── Input / output paths ───────────────────────────────────────────────────────
 input_paths:
   model_dir:  ${..output_dir}/${..experiment_name}/sparse_model
-  images_dir: ${..output_dir}/${..experiment_name}/sam3_masking/masked_images
-  masks_dir:  ${..output_dir}/${..experiment_name}/sam3_masking/masks                  # optional mask directory
+  images_dir: ${..output_dir}/${..experiment_name}/masking/masked_images
+  masks_dir:  ${..output_dir}/${..experiment_name}/masking/masks                  # optional mask directory
   valid_region_masks_dir: ${..output_dir}/${..experiment_name}/focus_stack/focus_stacked_masks
 
 output_paths:

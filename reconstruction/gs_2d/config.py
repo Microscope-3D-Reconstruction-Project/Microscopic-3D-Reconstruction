@@ -23,7 +23,7 @@ class Config:
     # ── Input / output paths ────────────────────────────────────────────────────────────
     model_dir: str = "outputs/sparse_model"
     images_dir: str = "outputs/images"
-    masks_dir: Optional[str] = "outputs/sam3_masking/masks"
+    masks_dir: Optional[str] = "outputs/masking/masks"
     splat_dir: str = "outputs/gs_2d"
 
     # ── Data ───────────────────────────────────────────────────────────────────────

@@ -10,9 +10,9 @@ import hydra
 from focus_stack import run_focus_stack
 from gs_2d.trainer_2dgs import run_gs_2d
 from gs_3d.trainer_3dgs import run_gs_3d
+from masking.runner import run_sam3_masking
 from omegaconf import DictConfig
 from process_scans import run_colmap_pipeline
-from sam3_masking.runner import run_sam3_masking
 
 
 def _init_timing_log(cfg: DictConfig) -> Path:
@@ -58,18 +58,18 @@ def _requires_masks(cfg: DictConfig) -> bool:
 
 
 def _validate_existing_sam3_masks(cfg: DictConfig) -> None:
-    if cfg.run.sam3_masking or not _requires_masks(cfg):
+    if cfg.run.masking or not _requires_masks(cfg):
         return
 
     masks_dir = os.path.join(
-        cfg.sam3_masking.output_paths.output_dir,
-        cfg.sam3_masking.output_paths.masks_subdir,
+        cfg.masking.output_paths.output_dir,
+        cfg.masking.output_paths.masks_subdir,
     )
     if not os.path.isdir(masks_dir):
         raise FileNotFoundError(
-            "run.sam3_masking is false, but downstream stages are enabled and "
-            f"expected existing SAM3 masks at {masks_dir!r}. Run the SAM3 masking "
-            "stage first or enable run.sam3_masking."
+            "run.masking is false, but downstream stages are enabled and "
+            f"expected existing SAM3 masks at {masks_dir!r}. Run the masking "
+            "stage first or enable run.masking."
         )
 
 
@@ -82,9 +82,9 @@ def main(cfg: DictConfig) -> None:
             with _timed_stage(timing_log_path, "focus_stack"):
                 run_focus_stack(cfg.focus_stack)
 
-        if cfg.run.sam3_masking:
-            with _timed_stage(timing_log_path, "sam3_masking"):
-                run_sam3_masking(cfg.sam3_masking)
+        if cfg.run.masking:
+            with _timed_stage(timing_log_path, "masking"):
+                run_sam3_masking(cfg.masking)
         else:
             _validate_existing_sam3_masks(cfg)
 

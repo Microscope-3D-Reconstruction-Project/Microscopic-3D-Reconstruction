@@ -4,9 +4,9 @@ import hydra
 import numpy as np
 import torch
 
+from masking.config import build_config
+from masking.pipeline import Sam3MaskingPipeline
 from omegaconf import DictConfig
-from sam3_masking.config import build_config
-from sam3_masking.pipeline import Sam3MaskingPipeline
 
 
 def set_random_seed(seed: int) -> None:
@@ -24,9 +24,7 @@ def run_sam3_masking(cfg_raw: DictConfig) -> None:
     Sam3MaskingPipeline(cfg).run()
 
 
-@hydra.main(
-    config_path="../configs/sam3_masking", config_name="default", version_base="1.3"
-)
+@hydra.main(config_path="../configs/masking", config_name="default", version_base="1.3")
 def main(cfg_raw: DictConfig) -> None:
     run_sam3_masking(cfg_raw)
 

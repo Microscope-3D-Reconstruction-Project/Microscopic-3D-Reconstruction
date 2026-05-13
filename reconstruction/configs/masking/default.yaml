@@ -8,7 +8,7 @@ input_paths:
   images_dir: ${...output_dir}/${...experiment_name}/focus_stack/focus_stacked_images
 
 output_paths:
-  output_dir: ${..output_dir}/${..experiment_name}/sam3_masking
+  output_dir: ${..output_dir}/${..experiment_name}/masking
   masks_subdir: masks
 
 # ── Threshold bootstrap ──────────────────────────────────────────────────────
