@@ -1,3 +1,4 @@
 results
 data
-configs/experiment/*.yaml
+configs/experiment/*
+!configs/experiment/.gitkeep
