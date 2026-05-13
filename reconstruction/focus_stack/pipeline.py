@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 
+import cv2
 import hydra
 import numpy as np
 
@@ -19,13 +20,19 @@ from focus_stack.sharpness_scoring import (
 from omegaconf import DictConfig
 
 
+def _natural_sort_key(path: str) -> list:
+    """Sort strings with embedded numbers in numeric order."""
+    text = os.path.basename(path)
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", text)]
+
+
 def _load_pose_for_scan(
     subdir_path: str, image_files: list, ref_idx: int
 ) -> np.ndarray:
     """Load the pose matrix for a scan directory.
 
     Checks in order:
-    1. pose_NNNNN.npy files whose numeric suffixes match frame_NNNNN.jpg files
+    1. pose_NNNNN.npy files whose numeric suffixes match frame_NNNNN image files
        (same count and same numbers) → loads the pose whose number matches the
        reference frame at ref_idx.
     2. A singular pose.npy file → loads it directly.
@@ -34,14 +41,16 @@ def _load_pose_for_scan(
     # Collect numeric suffixes from input frame files.
     frame_numbers = []
     for f in image_files:
-        # m = re.search(r"frame_(\d+)\.png$", os.path.basename(f))
-        m = re.search(r"frame_(\d+)\.jpg$", os.path.basename(f))
+        m = re.search(r"frame_(\d+)\.png$", os.path.basename(f))
+        # m = re.search(r"frame_(\d+)\.jpg$", os.path.basename(f))
 
         if m:
             frame_numbers.append(m.group(1))
 
     # Collect indexed pose_*.npy files.
-    pose_indexed = sorted(glob.glob(os.path.join(subdir_path, "pose_*.npy")))
+    pose_indexed = sorted(
+        glob.glob(os.path.join(subdir_path, "pose_*.npy")), key=_natural_sort_key
+    )
     pose_numbers = []
     for pose in pose_indexed:
         m = re.search(r"pose_(\d+)\.npy$", os.path.basename(pose))
@@ -203,24 +212,30 @@ def run_focus_stack(cfg: DictConfig) -> None:
 
     if cfg.scan_dirs is not None:
         scan_dirs = sorted(
-            d for d in cfg.scan_dirs if os.path.isdir(os.path.join(dataset_dir, d))
+            (d for d in cfg.scan_dirs if os.path.isdir(os.path.join(dataset_dir, d))),
+            key=_natural_sort_key,
         )
     else:
         scan_dirs = sorted(
-            d
-            for d in os.listdir(dataset_dir)
-            if os.path.isdir(os.path.join(dataset_dir, d))
-            and d.startswith(cfg.scan_prefix)
+            (
+                d
+                for d in os.listdir(dataset_dir)
+                if os.path.isdir(os.path.join(dataset_dir, d))
+                and d.startswith(cfg.scan_prefix)
+            ),
+            key=_natural_sort_key,
         )
 
     scan_inputs = []
     for subdir in scan_dirs:
         subdir_path = os.path.join(dataset_dir, subdir)
-        # image_files = sorted(glob.glob(os.path.join(subdir_path, "*.png")))
-        image_files = sorted(glob.glob(os.path.join(subdir_path, "*.jpg")))
+        image_files = sorted(
+            glob.glob(os.path.join(subdir_path, "*.png")), key=_natural_sort_key
+        )
+        # image_files = sorted(glob.glob(os.path.join(subdir_path, "*.jpg")))
         if not image_files:
-            # print(f"No .png files found in {subdir_path}, skipping.")
-            print(f"No .jpg files found in {subdir_path}, skipping.")
+            print(f"No .png files found in {subdir_path}, skipping.")
+            # print(f"No .jpg files found in {subdir_path}, skipping.")
             continue
 
         sharpness_scores = None
@@ -337,6 +352,14 @@ def run_focus_stack(cfg: DictConfig) -> None:
         )
         print(f"Running: {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
+
+        if cfg.get("low_pass_output") and os.path.exists(output_file):
+            k = int(cfg.get("low_pass_kernel_size", 5))
+            img = cv2.imread(output_file, cv2.IMREAD_UNCHANGED)
+            if img is not None:
+                img = cv2.GaussianBlur(img, (k, k), 0)
+                cv2.imwrite(output_file, img)
+                print(f"  Applied Gaussian blur (kernel={k}) to {output_file}")
 
         pose_matrix = _load_pose_for_scan(subdir_path, image_files, ref_idx)
         poses[f"{subdir}.png"] = pose_matrix.tolist()

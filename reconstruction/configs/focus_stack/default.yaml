@@ -12,8 +12,8 @@ experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 # ── Reference image selection ────────────────────────────────────────────────
 find_sharpest_image: true
 sharpness_score: laplacian    # laplacian | tenengrad
-sharpness_selection_mode: image  # image | window
-sharpness_window_weights: flat   # flat | gaussian
+sharpness_selection_mode: image  # image (takes sharpest image as window center) | window (sliding window and gets sharpest window)
+sharpness_window_weights: uniform   # uniform | gaussian
 sharpness_gaussian_sigma: null   # null = window_size / 6
 
 # ── Output paths ──────────────────────────────────────────────────────────────
@@ -33,6 +33,10 @@ focus_stack_params:
   global_align: true
   align_keep_size: true
   no_contrast: true
+
+# ── Post-processing ───────────────────────────────────────────────────────────
+low_pass_output: true          # apply Gaussian blur to focus-stacked output images
+low_pass_kernel_size: 5        # kernel size for Gaussian blur (must be odd)
 
 # ── Hydra internal settings ───────────────────────────────────────────────────
 hydra:

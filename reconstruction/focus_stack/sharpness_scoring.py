@@ -5,7 +5,7 @@ import numpy as np
 
 VALID_SHARPNESS_METHODS = ("laplacian", "tenengrad")
 VALID_SHARPNESS_SELECTION_MODES = ("image", "window")
-VALID_SHARPNESS_WINDOW_WEIGHTS = ("flat", "gaussian")
+VALID_SHARPNESS_WINDOW_WEIGHTS = ("uniform", "gaussian")
 
 
 def _load_grayscale_image(image_file: str) -> np.ndarray:
@@ -16,12 +16,14 @@ def _load_grayscale_image(image_file: str) -> np.ndarray:
 
 
 def _score_laplacian(gray: np.ndarray) -> float:
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    return float(cv2.Laplacian(blurred, cv2.CV_64F).var())
 
 
 def _score_tenengrad(gray: np.ndarray) -> float:
-    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    sobel_x = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=5)
+    sobel_y = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=5)
     gradient_magnitude_sq = sobel_x**2 + sobel_y**2
     return float(np.mean(gradient_magnitude_sq))
 
