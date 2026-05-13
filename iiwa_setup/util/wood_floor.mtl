@@ -1,0 +1,6 @@
+newmtl wood
+Ka 0.78 0.71 0.60
+Kd 0.78 0.71 0.60
+Ks 0.22 0.20 0.17
+Ns 48.0
+map_Kd wood_floor.png

@@ -44,7 +44,7 @@ def generate_centering_waypoints(center, radius, hemisphere_axis=None):
     directions = [
         ha,  # 0: straight
         c * ha + s * up,  # 1: up
-        c * ha - s * up,  # 2: down
+        np.cos(np.pi / 4) * ha - np.sin(np.pi / 4) * up,  # 2: down
         c * ha + s * right,  # 3: right
         c * ha - s * right,  # 4: left
     ]

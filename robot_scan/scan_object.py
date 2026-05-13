@@ -117,12 +117,11 @@ def _animate_configs(
 def main(
     use_hardware: bool,
     no_cam: bool = False,
-    live_view: bool = True,
     skip_opt: bool = False,
     start_idx: int = 0,
     wait: bool = False,
     num_scan_points: int = NUM_SCAN_POINTS,
-    only_rrt: bool = False,
+    use_hemisphere: bool = False,
 ) -> None:
     cfg = get_config(use_hardware)
     speed_factor = cfg["speed_factor"]
@@ -178,11 +177,10 @@ def main(
     print(colored("  Args:", "white"))
     print(f"    use_hardware     : {use_hardware}")
     print(f"    no_cam           : {no_cam}")
-    print(f"    live_view        : {live_view}")
     print(f"    skip_opt         : {skip_opt}")
     print(f"    start_idx        : {start_idx}")
     print(f"    wait             : {wait}")
-    print(f"    only_rrt         : {only_rrt}")
+    print(f"    use_hemisphere   : {use_hemisphere}")
     print(f"    num_scan_points  : {num_scan_points}")
     print(colored("  Hemisphere:", "white"))
     print(f"    center  : {hemisphere_pos}")
@@ -329,6 +327,8 @@ start_idx: {start_idx}
     simulator.Initialize()
 
     meshcat = station.internal_meshcat
+    meshcat.SetProperty("/Grid", "visible", False)
+    meshcat.SetProperty("/Axes", "visible", False)
 
     # ==================================================================
     # Buttons + sliders
@@ -533,6 +533,8 @@ start_idx: {start_idx}
     pause_start_sim_time = 0.0
     hold_traj_time = 0.0
 
+    optical_safe = True  # set per waypoint in COMPUTING_IKS
+
     # Timing trackers
     scan_start_wall_time = None
     move_durations = []  # trajectory end_time() for each between-scan move
@@ -572,7 +574,7 @@ start_idx: {start_idx}
             meshcat.SetSliderValue("Current PSI (deg)", np.rad2deg(psi_rad))
 
         # Live camera view with crosshairs
-        if live_view and not no_cam and _latest_frame_lock is not None:
+        if not no_cam and _latest_frame_lock is not None:
             with _latest_frame_lock:
                 lf = _latest_frame.copy() if _latest_frame is not None else None
             if lf is not None:
@@ -676,20 +678,18 @@ start_idx: {start_idx}
 
             print(colored(f"\n── Waypoint {scan_idx}/{n - 1} ──", "cyan"))
 
-            pose_target = hemisphere_waypoints[scan_idx] @ T_cam_to_tip
+            pose_target = hemisphere_waypoints[scan_idx]
             draw_triad(
                 meshcat, "next_scan_target", pose_target, length=0.1, radius=0.002
             )
 
-            eef_pose = internal_plant.GetFrameByName(
-                "microscope_tip_link"
-            ).CalcPoseInWorld(internal_plant_context)
-            pose_curr = hemisphere_waypoints[
-                scan_idx
-            ]  # raw waypoint at the target — optical axis z-axis must not be flipped
+            eef_pose = internal_plant.GetFrameByName("optical_center").CalcPoseInWorld(
+                internal_plant_context
+            )
+            pose_curr = hemisphere_waypoints[scan_idx]
 
-            # Launch hemisphere IK thread (skipped when --only_rrt)
-            if only_rrt:
+            # Launch hemisphere IK thread (skipped unless --use_hemisphere)
+            if not use_hemisphere:
                 hemisphere_ik_result["ready"] = True
                 hemisphere_ik_result["valid_joints"] = False
                 hemisphere_ik_result["valid_velocities"] = False
@@ -770,21 +770,41 @@ start_idx: {start_idx}
 
             # Set up optical axis + photo state for this scan
             if not skip_opt:
-                optical_axis_trajectory = optical_axis_ik_result["trajectory"]
-                if optical_axis_traj_time is None:
-                    optical_axis_traj_time = optical_axis_trajectory.end_time()
-                optical_halfway_time = optical_axis_trajectory.end_time() / 2.0
-                scan_frame_dir = scans_base / f"scan{scan_idx:02d}"
-                scan_frame_dir.mkdir(parents=True, exist_ok=True)
-                capture_traj_times = np.linspace(
-                    0.0, optical_halfway_time, num_pictures
+                optical_safe = (
+                    optical_axis_ik_result["valid_joints"]
+                    and optical_axis_ik_result["valid_velocities"]
                 )
-                next_capture_idx = 0
-                scan_frame_idx = 0
-                is_pausing_for_capture = False
-                pause_start_sim_time = 0.0
-                hold_traj_time = 0.0
-                print(colored(f"  Frame dir: {scan_frame_dir}", "cyan"))
+                if not optical_safe:
+                    if not optical_axis_ik_result["valid_joints"]:
+                        print(
+                            colored(
+                                f"  ⚠ Optical axis traj for waypoint {scan_idx}: joint-limit violation — skipping scan.",
+                                "yellow",
+                            )
+                        )
+                    if not optical_axis_ik_result["valid_velocities"]:
+                        print(
+                            colored(
+                                f"  ⚠ Optical axis traj for waypoint {scan_idx}: velocity violation — skipping scan.",
+                                "yellow",
+                            )
+                        )
+                else:
+                    optical_axis_trajectory = optical_axis_ik_result["trajectory"]
+                    if optical_axis_traj_time is None:
+                        optical_axis_traj_time = optical_axis_trajectory.end_time()
+                    optical_halfway_time = optical_axis_trajectory.end_time() / 2.0
+                    scan_frame_dir = scans_base / f"scan{scan_idx:02d}"
+                    scan_frame_dir.mkdir(parents=True, exist_ok=True)
+                    capture_traj_times = np.linspace(
+                        0.0, optical_halfway_time, num_pictures
+                    )
+                    next_capture_idx = 0
+                    scan_frame_idx = 0
+                    is_pausing_for_capture = False
+                    pause_start_sim_time = 0.0
+                    hold_traj_time = 0.0
+                    print(colored(f"  Frame dir: {scan_frame_dir}", "cyan"))
 
             if hemisphere_valid:
                 plot_trajectory_in_meshcat(
@@ -936,7 +956,7 @@ start_idx: {start_idx}
                 move_durations.append(rrt_result["trajectory"].end_time())
                 curr_idx = scan_idx
                 scan_idx += 1
-                if skip_opt:
+                if skip_opt or not optical_safe:
                     state = State.WAITING_FOR_NEXT_SCAN
                 else:
                     optical_pause_start_time = simulator.get_context().get_time()
@@ -954,7 +974,7 @@ start_idx: {start_idx}
                 move_durations.append(hemisphere_trajectory.end_time())
                 curr_idx = scan_idx
                 scan_idx += 1
-                if skip_opt:
+                if skip_opt or not optical_safe:
                     state = State.WAITING_FOR_NEXT_SCAN
                 else:
                     optical_pause_start_time = simulator.get_context().get_time()
@@ -1143,8 +1163,7 @@ start_idx: {start_idx}
         meshcat.DeleteSlider(f"Joint {i+1} (deg)")
     meshcat.DeleteSlider("Current PSI (deg)")
 
-    if live_view:
-        cv2.destroyAllWindows()
+    cv2.destroyAllWindows()
 
     if not no_cam and camera is not None:
         _capture_stop.set()
@@ -1163,9 +1182,6 @@ if __name__ == "__main__":
         "--use_hardware", action="store_true", help="Connect to real iiwa hardware."
     )
     parser.add_argument("--no_cam", action="store_true", help="Disable camera capture.")
-    parser.add_argument(
-        "--live_view", action="store_true", help="Show live camera feed in a window."
-    )
     parser.add_argument(
         "--skip_opt",
         action="store_true",
@@ -1189,18 +1205,17 @@ if __name__ == "__main__":
         help=f"Number of hemisphere scan points (default: {NUM_SCAN_POINTS}).",
     )
     parser.add_argument(
-        "--only_rrt",
+        "--use_hemisphere",
         action="store_true",
-        help="Always use RRT* for inter-waypoint moves; never use hemisphere trajectory.",
+        help="Use hemisphere trajectory for inter-waypoint moves (default: always use RRT*).",
     )
     args = parser.parse_args()
     main(
         use_hardware=args.use_hardware,
         no_cam=args.no_cam,
-        live_view=args.live_view,
         skip_opt=args.skip_opt,
         start_idx=args.start_idx,
         wait=args.wait,
         num_scan_points=args.num_scan_points,
-        only_rrt=args.only_rrt,
+        use_hemisphere=args.use_hemisphere,
     )

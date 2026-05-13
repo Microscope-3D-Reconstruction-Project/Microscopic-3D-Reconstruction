@@ -192,12 +192,16 @@ def main(
     # ==================================================================
     outputs_dir = Path(__file__).parent.parent / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
-    date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    scans_base = (
-        Path(__file__).parent.parent / "microscope-data" / "object_centering" / date_str
+    centering_dir = (
+        Path(__file__).parent.parent / "microscope-data" / "object_centering"
     )
-    scans_base.mkdir(parents=True, exist_ok=True)
-    print(colored(f"✓ Session outputs → {scans_base}", "cyan"))
+    centering_dir.mkdir(parents=True, exist_ok=True)
+    center_path = centering_dir / "center.npy"
+    print(
+        colored(
+            f"✓ Center will be saved → {center_path} (overwrites on each run)", "cyan"
+        )
+    )
 
     # ==================================================================
     # Waypoint generation (5 fixed centering poses)
@@ -242,11 +246,7 @@ def main(
         while _q_hardware[0] is None:
             _lc.HandleSubscriptions(100)
         initial_q = _q_hardware[0]
-        print(
-            colored(
-                f"✓ Hardware position: {np.rad2deg(initial_q).round(1)} deg", "cyan"
-            )
-        )
+
     else:
         initial_q = default_position
 
@@ -391,33 +391,34 @@ def main(
             joint_upper_limits,
             tip_frame_name="optical_center",
         )
+
         n_filt = Q.shape[0] if hasattr(Q, "shape") else len(Q)
-        # print(
-        #     colored(
-        #         f"[DEBUG] wp {i}: raw IK = {n_raw}  →  after filter = {n_filt}",
-        #         "magenta",
-        #     )
-        # )
 
         if Q.shape[0] == 0:
-            print(colored(f"  [{i}] FAIL: no valid IK solutions", "yellow"))
+            label = labels[i] if i < len(labels) else str(i)
+            print(colored(f"  [{i}] ❌ FAIL ({label}): no valid IK solutions", "red"))
             failed_indices.append(i)
             continue
 
         q_des = kinematics_solver.find_closest_solution(Q, q_prev)
         q_array[i] = q_des
         q_prev = q_des
-        print(f"  [{i}] {labels[i]}: {np.rad2deg(q_des).round(2)} deg")
+        label = labels[i] if i < len(labels) else str(i)
+        print(colored(f"  [{i}] ✓ {label}", "green"))
 
     n_valid = int(np.sum(~np.isnan(q_array).any(axis=1)))
-    print(
-        colored(
-            f"\nPre-computation done: {n_valid}/{n} valid, {len(failed_indices)} failed.",
-            "cyan",
-        )
-    )
     if failed_indices:
-        print(colored(f"  Failed indices: {failed_indices}", "yellow"))
+        failed_labels = [
+            labels[i] if i < len(labels) else str(i) for i in failed_indices
+        ]
+        print(
+            colored(
+                f"\n❌ Only {n_valid}/{n} viewpoints reachable. Failed: {failed_labels}. Quitting.",
+                "red",
+            )
+        )
+        return
+    print(colored(f"\n✓ All {n_valid}/{n} viewpoints reachable.", "green"))
 
     np.savetxt(outputs_dir / "hemisphere_q_solutions.csv", q_array, delimiter=",")
 
@@ -1071,7 +1072,7 @@ def main(
             if collected_rays:
                 origins = np.array([ray[0] for ray in collected_rays])
                 directions = np.array([ray[1] for ray in collected_rays])
-                rays_path = scans_base / "rays.npy"
+                rays_path = centering_dir / "rays.npy"
                 np.save(rays_path, np.stack([origins, directions], axis=1))
                 print(
                     colored(
@@ -1091,10 +1092,10 @@ def main(
                             "green",
                         )
                     )
-                    np.save(scans_base / "predicted_center.npy", predicted)
+                    np.save(center_path, predicted)
                     print(
                         colored(
-                            f"✓ Predicted center saved → {scans_base / 'predicted_center.npy'}",
+                            f"✓ Predicted center saved → {center_path}",
                             "cyan",
                         )
                     )

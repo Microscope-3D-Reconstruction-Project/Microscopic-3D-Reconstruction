@@ -221,19 +221,33 @@ class InternalStationDiagram(Diagram):
             else None
         )
 
-        add_floor(self._plant)
-        add_wall(self._plant)
+        if self.hemisphere_pos is not None:
+            floor_length = (
+                self.hemisphere_pos[0] + 0.32
+            )  # right edge at white wall x-center
+        else:
+            floor_length = 1.8
+
+        add_floor(self._plant, floor_length=floor_length)
+        add_wall(
+            self._plant,
+            wall_width=floor_length,  # matches square floor y-extent
+            wall_color=[0.3, 0.3, 0.3, 0.5],
+        )
 
         if self.hemisphere_pos is not None:
+            hemi_wall_height = 2 * (self.hemisphere_pos[2] + 0.15)
             wall_pos = [
                 self.hemisphere_pos[0] + 0.02,
                 self.hemisphere_pos[1],
-                self.hemisphere_pos[2],
+                hemi_wall_height / 2,
             ]
             add_wall(
                 self._plant,
                 wall_width=0.325,
+                wall_height=hemi_wall_height,
                 X_WF=RigidTransform(RotationMatrix(), wall_pos),
+                wall_color=[1.0, 1.0, 1.0, 0.2],
             )
 
             # add_sphere(
@@ -327,20 +341,20 @@ class InternalStationDiagram(Diagram):
         )
 
         # Add other world geometry (e.g., floor, wall, etc.)
-        add_floor(self._optimization_plant)
-        add_wall(self._optimization_plant)
-        # add_wall(
-        #     self._optimization_plant,
-        #     wall_width=0.1,
-        #     X_WF=RigidTransform(
-        #         hemisphere_wall_rot, self.hemisphere_pos + np.array([0.0, 0.005, 0.0])
-        #     ),
-        # )
+        add_floor(self._optimization_plant, floor_length=floor_length)
+        add_wall(self._optimization_plant, wall_width=floor_length)
         if self.hemisphere_pos is not None:
+            hemi_wall_height = 2 * (self.hemisphere_pos[2] + 0.15)
+            opt_wall_pos = [
+                self.hemisphere_pos[0] + 0.02,
+                self.hemisphere_pos[1],
+                hemi_wall_height / 2,
+            ]
             add_wall(
                 self._optimization_plant,
                 wall_width=0.325,
-                X_WF=RigidTransform(RotationMatrix(), wall_pos),
+                wall_height=hemi_wall_height,
+                X_WF=RigidTransform(RotationMatrix(), opt_wall_pos),
             )
 
             # add_sphere(

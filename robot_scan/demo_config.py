@@ -53,9 +53,9 @@ DEFAULT_POSITION = np.deg2rad([-15.34, 56.02, 47.29, -117.17, 0.38, -70.58, -37.
 
 # Hemisphere defaults
 HEMISPHERE_DIST = 0.8
-HEMISPHERE_RADIUS = 0.14  # 0.16 for scan_object
-HEMISPHERE_CENTER_PATH = Path(
-    "/home/rmineyev3/KUKA/Microscopic-3D-Reconstruction/microscope-data/object_centering/20260512_001211/predicted_center.npy"
+HEMISPHERE_RADIUS = 0.13  # 0.13 for scan_object, 0.10 for finding center
+HEMISPHERE_CENTER_PATH = (
+    Path(__file__).parent.parent / "microscope-data" / "object_centering" / "center.npy"
 )
 HEMISPHERE_CENTER = np.load(HEMISPHERE_CENTER_PATH)
 
