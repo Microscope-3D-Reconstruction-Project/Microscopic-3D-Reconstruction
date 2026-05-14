@@ -198,53 +198,6 @@ class Sam3MaskingPipeline:
                 appearance_extractor=appearance_extractor,
             )
         )
-        print("Running threshold detection on all images for debug output...")
-        for img_path in image_paths:
-            filename = os.path.basename(img_path)
-            base_name = os.path.splitext(filename)[0]
-            if img_path == bootstrap_path:
-                continue  # already saved above
-            image = Image.open(img_path).convert("RGB")
-            (
-                thresh_mask,
-                thresh_num_components,
-                thresh_contours,
-                thresh_hull,
-            ) = create_foreground_mask(
-                image_rgb=image,
-                min_contour_area=args.min_contour_area,
-                morph_kernel_size=args.morph_kernel_size,
-                keep_largest=True,
-            )
-            save_outputs(
-                image=image,
-                combined_mask=thresh_mask,
-                output_dirs=threshold_output_dirs,
-                base_name=base_name,
-                overlay_color=args.overlay_color,
-                overlay_alpha=args.overlay_alpha,
-            )
-            save_contour_visualization(
-                image=image,
-                contours=thresh_contours,
-                hull=thresh_hull,
-                output_dir=threshold_bbox_images_dir,
-                base_name=base_name,
-            )
-            thresh_bbox = get_mask_bbox(thresh_mask, padding=args.bbox_padding)
-            if thresh_bbox is not None:
-                save_bbox_visualization(
-                    image=image,
-                    bbox=thresh_bbox,
-                    output_dir=threshold_bbox_images_dir,
-                    base_name=f"{base_name}_threshold_prompt",
-                    color=args.overlay_color,
-                )
-            print(
-                f"  {filename}: threshold components={thresh_num_components}, "
-                f"bbox={thresh_bbox}"
-            )
-
         prompt = args.prompt.strip() if args.prompt and args.prompt.strip() else None
         if prompt:
             print(f"  SAM3 text prompt: {prompt!r}")
