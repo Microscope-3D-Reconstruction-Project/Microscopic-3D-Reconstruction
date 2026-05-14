@@ -20,18 +20,26 @@ def _init_timing_log(cfg: DictConfig) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     log_path = output_dir / "pipeline_timings.log"
-    with open(log_path, "w") as f:
-        f.write(f"Pipeline timing log started: {datetime.now().isoformat()}\n")
-        f.write(f"Experiment: {cfg.experiment_name}\n")
-        f.write("stage\tstatus\tduration_seconds\n")
+    if not log_path.exists():
+        with open(log_path, "w") as f:
+            f.write(f"Pipeline timing log started: {datetime.now().isoformat()}\n")
+            f.write(f"Experiment: {cfg.experiment_name}\n")
+            f.write("stage\tstatus\tduration_seconds\n")
     return log_path
 
 
 def _write_timing(
     log_path: Path, stage_name: str, status: str, duration: float
 ) -> None:
+    new_entry = f"{stage_name}\t{status}\t{duration:.3f}"
+    lines = log_path.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith(f"{stage_name}\t"):
+            lines[i] = new_entry
+            log_path.write_text("\n".join(lines) + "\n")
+            return
     with open(log_path, "a") as f:
-        f.write(f"{stage_name}\t{status}\t{duration:.3f}\n")
+        f.write(new_entry + "\n")
 
 
 @contextmanager
