@@ -26,6 +26,15 @@ def _init_timing_log(cfg: DictConfig) -> Path:
             f.write(f"Pipeline timing log started: {datetime.now().isoformat()}\n")
             f.write(f"Experiment: {cfg.experiment_name}\n")
             f.write("stage\tstatus\tduration_seconds\n")
+            for stage in (
+                "focus_stack",
+                "masking",
+                "colmap",
+                "gs_3d",
+                "gs_2d",
+                "pipeline_total",
+            ):
+                f.write(f"{stage}\tnot_ran\t0.000\n")
     return log_path
 
 
@@ -41,6 +50,19 @@ def _write_timing(
             return
     with open(log_path, "a") as f:
         f.write(new_entry + "\n")
+
+
+def _write_pipeline_total(log_path: Path) -> None:
+    total = 0.0
+    for line in log_path.read_text().splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0] != "stage" and parts[0] != "pipeline_total":
+            try:
+                total += float(parts[2])
+            except ValueError:
+                pass
+    _write_timing(log_path, "pipeline_total", "success", total)
+    print(f"pipeline_total {total:.2f} seconds")
 
 
 @contextmanager
@@ -82,27 +104,28 @@ def _validate_existing_sam3_masks(cfg: DictConfig) -> None:
 def main(cfg: DictConfig) -> None:
     timing_log_path = _init_timing_log(cfg)
 
-    with _timed_stage(timing_log_path, "pipeline_total"):
-        if cfg.run.focus_stack:
-            with _timed_stage(timing_log_path, "focus_stack"):
-                run_focus_stack(cfg.focus_stack)
+    if cfg.run.focus_stack:
+        with _timed_stage(timing_log_path, "focus_stack"):
+            run_focus_stack(cfg.focus_stack)
 
-        if cfg.run.masking:
-            with _timed_stage(timing_log_path, "masking"):
-                run_sam3_masking(cfg.masking)
-        else:
-            _validate_existing_sam3_masks(cfg)
+    if cfg.run.masking:
+        with _timed_stage(timing_log_path, "masking"):
+            run_sam3_masking(cfg.masking)
+    else:
+        _validate_existing_sam3_masks(cfg)
 
-        if cfg.run.colmap:
-            with _timed_stage(timing_log_path, "colmap"):
-                run_colmap_pipeline(cfg.colmap)
+    if cfg.run.colmap:
+        with _timed_stage(timing_log_path, "colmap"):
+            run_colmap_pipeline(cfg.colmap)
 
-        if cfg.run.splatting_method == "gs_3d":
-            with _timed_stage(timing_log_path, "gs_3d"):
-                run_gs_3d(cfg.gs_3d)
-        elif cfg.run.splatting_method == "gs_2d":
-            with _timed_stage(timing_log_path, "gs_2d"):
-                run_gs_2d(cfg.gs_2d)
+    if cfg.run.splatting_method == "gs_3d":
+        with _timed_stage(timing_log_path, "gs_3d"):
+            run_gs_3d(cfg.gs_3d)
+    elif cfg.run.splatting_method == "gs_2d":
+        with _timed_stage(timing_log_path, "gs_2d"):
+            run_gs_2d(cfg.gs_2d)
+
+    _write_pipeline_total(timing_log_path)
 
 
 if __name__ == "__main__":
