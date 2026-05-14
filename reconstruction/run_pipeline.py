@@ -12,7 +12,8 @@ from gs_2d.trainer_2dgs import run_gs_2d
 from gs_3d.trainer_3dgs import run_gs_3d
 from masking.runner import run_sam3_masking
 from omegaconf import DictConfig
-from process_scans import run_colmap_pipeline
+
+from colmap.runner import run_colmap_pipeline
 
 
 def _init_timing_log(cfg: DictConfig) -> Path:
@@ -58,11 +59,7 @@ def _timed_stage(log_path: Path, stage_name: str):
 
 
 def _requires_masks(cfg: DictConfig) -> bool:
-    return (
-        cfg.run.colmap_feat_extract_match
-        or cfg.run.colmap_reconstruct
-        or cfg.run.splatting_method in ("gs_3d", "gs_2d")
-    )
+    return cfg.run.colmap or cfg.run.splatting_method in ("gs_3d", "gs_2d")
 
 
 def _validate_existing_sam3_masks(cfg: DictConfig) -> None:
@@ -96,7 +93,7 @@ def main(cfg: DictConfig) -> None:
         else:
             _validate_existing_sam3_masks(cfg)
 
-        if cfg.run.colmap_feat_extract_match or cfg.run.colmap_reconstruct:
+        if cfg.run.colmap:
             with _timed_stage(timing_log_path, "colmap"):
                 run_colmap_pipeline(cfg.colmap)
 

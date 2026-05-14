@@ -474,7 +474,7 @@ def run_colmap_pipeline(cfg: DictConfig) -> None:
         output_model.export_PLY(output_model_dir / "sparse_pointcloud.ply")
 
 
-@hydra.main(config_path="configs/colmap", config_name="default", version_base="1.3")
+@hydra.main(config_path="../configs/colmap", config_name="default", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     run_colmap_pipeline(cfg)
 

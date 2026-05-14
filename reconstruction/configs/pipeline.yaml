@@ -19,8 +19,7 @@ dataset_dir: ???              # required: directory containing scan subdirs
 run:
   focus_stack: true
   masking: true
-  colmap_feat_extract_match: true
-  colmap_reconstruct: true
+  colmap: true
   splatting_method: gs_3d # choice of gs_3d, gs_2d, or null which will not run splatting
 
 # ── Wire experiment dir into focus_stack ─────────────────────────────────────
@@ -41,9 +40,6 @@ colmap:
   output_dir: ${output_dir}
   experiment_name: ${experiment_name}
   random_seed: ${random_seed}
-  run:
-    colmap_feat_extract_match: ${run.colmap_feat_extract_match}
-    colmap_reconstruct: ${run.colmap_reconstruct}
 
 # ── Wire experiment context into GS methods ──────────────────────────────────
 # input_paths and output_paths resolve automatically via interpolations in
