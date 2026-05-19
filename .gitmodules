@@ -7,3 +7,6 @@
 [submodule "sam3"]
 	path = sam3
 	url = https://github.com/facebookresearch/sam3.git
+[submodule "focus-stack"]
+	path = focus-stack
+	url = https://github.com/razarcon3/focus-stack.git
