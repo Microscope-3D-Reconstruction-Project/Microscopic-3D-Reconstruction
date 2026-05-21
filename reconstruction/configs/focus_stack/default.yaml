@@ -11,7 +11,7 @@ experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 
 # ── Reference image selection ────────────────────────────────────────────────
 find_sharpest_image: true
-sharpness_score: laplacian    # laplacian | tenengrad
+sharpness_score: tenengrad    # laplacian | tenengrad
 sharpness_selection_mode: window  # image (takes sharpest image as window center) | window (sliding window and gets sharpest window)
 sharpness_window_weights: uniform   # uniform | gaussian
 sharpness_gaussian_sigma: null   # null = window_size / 6
