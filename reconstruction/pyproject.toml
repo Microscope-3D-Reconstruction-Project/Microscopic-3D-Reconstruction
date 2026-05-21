@@ -40,17 +40,12 @@ dependencies = [
     "hf-xet>=1.4.3",
     "regex>=2026.4.4",
     "sam2>=1.1.0",
-]
-
-[project.optional-dependencies]
-colmap = [
-    "pycolmap",
+    "pycolmap==4.0.4"
 ]
 
 [tool.uv.sources]
 fused-ssim = { git = "https://github.com/rahul-goel/fused-ssim", rev = "a7c48d6dd7ac6dc39a7958c7c4452e0b10418f38" }
 fused-bilagrid = { git = "https://github.com/harry7557558/fused-bilagrid", rev = "3bd774b644c3194225a5a0ddf46157092511ba3d" }
-pycolmap = { path = "../colmap" }
 
 [tool.uv.extra-build-dependencies]
 fused-bilagrid = ["torch>=2.11.0"]

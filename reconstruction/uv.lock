@@ -2142,15 +2142,29 @@ wheels = [
 
 [[package]]
 name = "pycolmap"
-version = "4.1.0.dev0"
-source = { directory = "../colmap" }
+version = "4.0.4"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "numpy" }]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/fa/040d68cb0713d1e4e532c8dcf9cfb275d1c8ec9c975eba895875fcc44c81/pycolmap-4.0.4-cp310-cp310-macosx_14_0_arm64.whl", hash = "sha256:3f2e34bf4c75150063c06e407d668e54a291ab5d12ae9d6b030bf255a9aada85", size = 19861297, upload-time = "2026-04-27T14:44:26.236Z" },
+    { url = "https://files.pythonhosted.org/packages/69/e9/3ce84b1135969e04bf1203d351a82f4e56b044a666580c04891d61b5b63a/pycolmap-4.0.4-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:e6f9bf674423663b855f383581bc58960f1f66d8a7db53dd624ad12b42531919", size = 27086130, upload-time = "2026-04-27T14:44:28.825Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/50/217789588e0b0ba0d73820dc65de06bba024f0e2f22d7dd22e6ffb4bc90d/pycolmap-4.0.4-cp310-cp310-win_amd64.whl", hash = "sha256:e3f0128b01bc6373901ed97e87a2584a252ea26dbcacb7497e26af3af6d8ccd9", size = 23370674, upload-time = "2026-04-27T14:44:31.331Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/2a/84b3d17aa476f76b8d22317e0f7781719c0a4836c3f1fef03b9ae5fdbfe7/pycolmap-4.0.4-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:4529e54ef62ad0d0b0ff24771cbe4ca59ffd1d964e105ad2545eda7594e5cf5f", size = 19862902, upload-time = "2026-04-27T14:44:33.84Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/eb/1afcc90b625e15b6a81487d978c94fb28302c0a73606a0e80562dbdda751/pycolmap-4.0.4-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:32e23b906212195c56506a180239369a38770a75cca699467a9c57092ce8b8ee", size = 27088313, upload-time = "2026-04-27T14:44:36.684Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/04/e753df67820460668376b8859b12e929176f174daca9fa982628a9cf8467/pycolmap-4.0.4-cp311-cp311-win_amd64.whl", hash = "sha256:e7ffc8eb9458a571e6987d27f0aed6c1a738bdddc58c3c51bbba02525f1a97e5", size = 23371018, upload-time = "2026-04-27T14:44:39.847Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/bc/1846a49a7ffa67b2f1426224d539bb5e916ee1c82c776bcc50264b82f057/pycolmap-4.0.4-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:15ff6cbf306a1ea107a57bd688d051eb016c94c5d36e1b5501017417d8ff7ceb", size = 19895644, upload-time = "2026-04-27T14:44:42.349Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/ac/b149a9be66f44f12c2eec8f7c345b69e4c24505d3283141217969bf03670/pycolmap-4.0.4-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:d962623a3da308a44feab08a0ed2c865ff9c33de9460b94d771e2dd80af3631b", size = 27116900, upload-time = "2026-04-27T14:44:45.39Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/96/b6649bedcec7997e00452db5f69352254630d0df2688b861f28960851428/pycolmap-4.0.4-cp312-cp312-win_amd64.whl", hash = "sha256:59059e20e76dcda0d64575ba4c9c30fa27348a4678068a4511a4fa230ec48c32", size = 23381566, upload-time = "2026-04-27T14:44:47.883Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/43/f142a64d8e9a8bd9c640c5ce06891209df49baa8d442d1d8672bc457eaf1/pycolmap-4.0.4-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:d20daf8dc004ce2b9b7b02eb1a6e920cb940eb9a5356842afa0dc471a06cb180", size = 19896178, upload-time = "2026-04-27T14:44:50.429Z" },
+    { url = "https://files.pythonhosted.org/packages/34/90/2fcd24a24d36ef62e712b56a9cc6d78fda0fb87d2017068a2e01b9f8938d/pycolmap-4.0.4-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:964a704a0adc1df5d7337bd15a65544a67b8a31942ad7d4cfa137dfdf3dfa119", size = 27117963, upload-time = "2026-04-27T14:44:52.757Z" },
+    { url = "https://files.pythonhosted.org/packages/35/5a/727dd1971bf14246e1b199a529e2d5f0a0fc59f64136ff23ba5833cc0154/pycolmap-4.0.4-cp313-cp313-win_amd64.whl", hash = "sha256:9af65a0dde7487f15e0851cefe5c084e41904e2fc7c809d80cca0ef13ff2e366", size = 23381748, upload-time = "2026-04-27T14:44:55.841Z" },
+    { url = "https://files.pythonhosted.org/packages/77/f8/787f4bd2811d39ae99f827136a2de16038d2a70d7656e7af542efc391bf8/pycolmap-4.0.4-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:beb56782b75c77bdb0d9d4e8a7d8fdf38b37d169df30a72a11f2da1a5b3fe5e1", size = 19907542, upload-time = "2026-04-27T14:44:58.32Z" },
+    { url = "https://files.pythonhosted.org/packages/44/f8/6cfbad9847b2d3503cb9f2d189b0557c72d83abb0f7aa30f5a6bcdd273f2/pycolmap-4.0.4-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:4a267b4181869f4fd3cb8ec8ab8f9b5788b5de27822975d8818625fc6b20282f", size = 27121738, upload-time = "2026-04-27T14:45:00.832Z" },
+    { url = "https://files.pythonhosted.org/packages/16/a1/63b5b1e2af1067011b4554f141788697f8da62ca07bcc13fbffad7c4f8e3/pycolmap-4.0.4-cp314-cp314-win_amd64.whl", hash = "sha256:e117a5e30ad020d151dd501c934933c5cdfac606480edd84365435548bbeddda", size = 24096761, upload-time = "2026-04-27T14:45:03.402Z" },
+]
 
 [[package]]
 name = "pygments"
@@ -2289,6 +2303,7 @@ dependencies = [
     { name = "plotly" },
     { name = "pybind11" },
     { name = "pybind11-stubgen" },
+    { name = "pycolmap" },
     { name = "pyyaml" },
     { name = "regex" },
     { name = "ruff" },
@@ -2311,11 +2326,6 @@ dependencies = [
     { name = "viser" },
 ]
 
-[package.optional-dependencies]
-colmap = [
-    { name = "pycolmap" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "einops", specifier = ">=0.8.2" },
@@ -2334,7 +2344,7 @@ requires-dist = [
     { name = "plotly", specifier = ">=6.7.0" },
     { name = "pybind11", specifier = ">=3.0.4" },
     { name = "pybind11-stubgen", specifier = ">=2.5.5" },
-    { name = "pycolmap", marker = "extra == 'colmap'", directory = "../colmap" },
+    { name = "pycolmap", specifier = "==4.0.4" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "regex", specifier = ">=2026.4.4" },
     { name = "ruff", specifier = ">=0.15.11" },
@@ -2355,7 +2365,6 @@ requires-dist = [
     { name = "tyro", specifier = ">=0.8.8" },
     { name = "viser", specifier = ">=1.0.26" },
 ]
-provides-extras = ["colmap"]
 
 [[package]]
 name = "referencing"
