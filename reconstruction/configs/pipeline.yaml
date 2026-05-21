@@ -3,7 +3,6 @@ defaults:
   - masking: default
   - colmap: default
   - gs_3d: default
-  - gs_2d: default
   - _self_
 
 # ── Experiment ────────────────────────────────────────────────────────────────
@@ -20,7 +19,7 @@ run:
   focus_stack: true
   masking: true
   colmap: true
-  splatting_method: gs_3d # choice of gs_3d, gs_2d, or null which will not run splatting
+  gs_3d: true
 
 # ── Wire experiment dir into focus_stack ─────────────────────────────────────
 focus_stack:
@@ -45,11 +44,6 @@ colmap:
 # input_paths and output_paths resolve automatically via interpolations in
 # configs/gs_3d/default.yaml once output_dir and experiment_name are set.
 gs_3d:
-  output_dir: ${output_dir}
-  experiment_name: ${experiment_name}
-  random_seed: ${random_seed}
-
-gs_2d:
   output_dir: ${output_dir}
   experiment_name: ${experiment_name}
   random_seed: ${random_seed}

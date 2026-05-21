@@ -7,13 +7,11 @@ from pathlib import Path
 
 import hydra
 
+from colmap.runner import run_colmap_pipeline
 from focus_stack import run_focus_stack
-from gs_2d.trainer_2dgs import run_gs_2d
 from gs_3d.trainer_3dgs import run_gs_3d
 from masking.runner import run_sam2_masking
 from omegaconf import DictConfig
-
-from colmap.runner import run_colmap_pipeline
 
 
 def _init_timing_log(cfg: DictConfig) -> Path:
@@ -31,7 +29,6 @@ def _init_timing_log(cfg: DictConfig) -> Path:
                 "masking",
                 "colmap",
                 "gs_3d",
-                "gs_2d",
                 "pipeline_total",
             ):
                 f.write(f"{stage}\tnot_ran\t0.000\n")
@@ -81,7 +78,7 @@ def _timed_stage(log_path: Path, stage_name: str):
 
 
 def _requires_masks(cfg: DictConfig) -> bool:
-    return cfg.run.colmap or cfg.run.splatting_method in ("gs_3d", "gs_2d")
+    return cfg.run.colmap or cfg.run.gs_3d
 
 
 def _validate_existing_masks(cfg: DictConfig) -> None:
@@ -118,12 +115,9 @@ def main(cfg: DictConfig) -> None:
         with _timed_stage(timing_log_path, "colmap"):
             run_colmap_pipeline(cfg.colmap)
 
-    if cfg.run.splatting_method == "gs_3d":
+    if cfg.run.gs_3d:
         with _timed_stage(timing_log_path, "gs_3d"):
             run_gs_3d(cfg.gs_3d)
-    elif cfg.run.splatting_method == "gs_2d":
-        with _timed_stage(timing_log_path, "gs_2d"):
-            run_gs_2d(cfg.gs_2d)
 
     _write_pipeline_total(timing_log_path)
 
