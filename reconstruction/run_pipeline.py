@@ -10,7 +10,7 @@ import hydra
 from focus_stack import run_focus_stack
 from gs_2d.trainer_2dgs import run_gs_2d
 from gs_3d.trainer_3dgs import run_gs_3d
-from masking.runner import run_sam3_masking
+from masking.runner import run_sam2_masking
 from omegaconf import DictConfig
 
 from colmap.runner import run_colmap_pipeline
@@ -84,7 +84,7 @@ def _requires_masks(cfg: DictConfig) -> bool:
     return cfg.run.colmap or cfg.run.splatting_method in ("gs_3d", "gs_2d")
 
 
-def _validate_existing_sam3_masks(cfg: DictConfig) -> None:
+def _validate_existing_masks(cfg: DictConfig) -> None:
     if cfg.run.masking or not _requires_masks(cfg):
         return
 
@@ -95,7 +95,7 @@ def _validate_existing_sam3_masks(cfg: DictConfig) -> None:
     if not os.path.isdir(masks_dir):
         raise FileNotFoundError(
             "run.masking is false, but downstream stages are enabled and "
-            f"expected existing SAM3 masks at {masks_dir!r}. Run the masking "
+            f"expected existing masks at {masks_dir!r}. Run the masking "
             "stage first or enable run.masking."
         )
 
@@ -110,9 +110,9 @@ def main(cfg: DictConfig) -> None:
 
     if cfg.run.masking:
         with _timed_stage(timing_log_path, "masking"):
-            run_sam3_masking(cfg.masking)
+            run_sam2_masking(cfg.masking)
     else:
-        _validate_existing_sam3_masks(cfg)
+        _validate_existing_masks(cfg)
 
     if cfg.run.colmap:
         with _timed_stage(timing_log_path, "colmap"):

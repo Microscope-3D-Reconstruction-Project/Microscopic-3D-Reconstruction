@@ -1,9 +1,9 @@
-# ── Experiment ────────────────────────────────────────────────────────────────
+# Experiment
 output_dir: outputs
 experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 random_seed: 0
 
-# ── Input / output paths ─────────────────────────────────────────────────────
+# Input / output paths
 input_paths:
   images_dir: ${...output_dir}/${...experiment_name}/focus_stack/focus_stacked_images
 
@@ -11,60 +11,25 @@ output_paths:
   output_dir: ${..output_dir}/${..experiment_name}/masking
   masks_subdir: masks
 
-# ── Threshold bootstrap ──────────────────────────────────────────────────────
+# Threshold bootstrap
 bootstrap:
   min_contour_area: 100.0
   morph_kernel_size: 5
   bootstrap_stem: scan00
   bbox_padding: 20
 
-# ── SAM3 paired prediction ───────────────────────────────────────────────────
-sam3:
-  checkpoint_path: null
-  bpe_path: null
-  compile: false
-  prompt: null
-  output_prob_thresh: 0.5
-  device: null
+# SAM2
+sam2:
+  model_id: facebook/sam2.1-hiera-small
+  device: cuda
+  offload_video_to_cpu: true
 
-# ── Visualization/debug outputs ──────────────────────────────────────────────
+# Visualization/debug outputs
 visualization:
   overlay_alpha: 0.4
   overlay_color: [255, 0, 0]
 
-# ── Appearance consistency ───────────────────────────────────────────────────
-appearance:
-  enabled: true
-  top_k: 5
-  tau: 3.0
-  min_mutual_neighbors: 1
-
-# ── Mask sanity checks ───────────────────────────────────────────────────────
-mask_sanity:
-  min_mask_area_frac: 1e-5
-  max_bbox_area_frac: 0.8
-  min_mask_fill_ratio: 0.02
-  max_mask_components: 3
-
-# ── Outlier reruns ───────────────────────────────────────────────────────────
-rerun:
-  enabled: true
-  anchor_top_k: 3
-  anchor_strategy: hybrid # hybrid | appearance | index
-  anchor_index_weight: 0.15
-
-# ── DINOv3 patch appearance ──────────────────────────────────────────────────
-dinov3:
-  model: vit_small_patch16_dinov3
-  pretrained: true
-  image_size: 512
-  device: null
-  patch_similarity_threshold: 0.45
-  max_bad_patch_fraction: 0.2
-  min_patch_mean_score: -1.0
-  max_patch_bank: 20000
-
-# ── Hydra internal settings ──────────────────────────────────────────────────
+# Hydra internal settings
 hydra:
   job:
     chdir: false

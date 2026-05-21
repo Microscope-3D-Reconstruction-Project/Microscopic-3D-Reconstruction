@@ -1,12 +1,9 @@
 [submodule "microscope-data"]
 	path = microscope-data
-	url = git@hf.co:datasets/microscope-project/microscope-data
+	url = https://huggingface.co/datasets/microscope-project/microscope-data
 [submodule "colmap"]
 	path = colmap
 	url = https://github.com/colmap/colmap
-[submodule "sam3"]
-	path = sam3
-	url = https://github.com/facebookresearch/sam3.git
 [submodule "focus-stack"]
 	path = focus-stack
 	url = https://github.com/razarcon3/focus-stack.git

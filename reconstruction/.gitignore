@@ -2,3 +2,5 @@ results
 data
 configs/experiment/*
 !configs/experiment/.gitkeep
+outputs/*
+!outputs/.gitkeep

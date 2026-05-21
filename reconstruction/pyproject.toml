@@ -39,6 +39,7 @@ dependencies = [
     "plotly>=6.7.0",
     "hf-xet>=1.4.3",
     "regex>=2026.4.4",
+    "sam2>=1.1.0",
 ]
 
 [project.optional-dependencies]

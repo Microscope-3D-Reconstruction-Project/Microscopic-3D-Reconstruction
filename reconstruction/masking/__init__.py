@@ -1,1 +1,1 @@
-"""SAM3 masking stage for the reconstruction pipeline."""
+"""SAM2 masking stage for the reconstruction pipeline."""
