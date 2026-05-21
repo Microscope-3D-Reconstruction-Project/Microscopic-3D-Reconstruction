@@ -40,7 +40,8 @@ dependencies = [
     "hf-xet>=1.4.3",
     "regex>=2026.4.4",
     "sam2>=1.1.0",
-    "pycolmap==4.0.4"
+    "pycolmap==4.0.4",
+    "scipy>=1.15.3",
 ]
 
 [tool.uv.sources]
