@@ -16,7 +16,7 @@ from .mask_utils import (
     get_mask_bbox,
     list_input_images,
 )
-from .sam2_predictor import Sam2Predictor
+from .sam2_mask_predictor import Sam2MaskPredictor
 
 
 class Sam2MaskingPipeline:
@@ -135,8 +135,8 @@ class Sam2MaskingPipeline:
 
         # Step 3: SAM2 image predictor on scan00 -> precise mask
         print("Running SAM2 image predictor on bootstrap frame...")
-        predictor = Sam2Predictor(args)
-        precise_mask = predictor.predict_image(
+        predictor = Sam2MaskPredictor(args)
+        precise_mask = predictor.predict_image_from_bbox(
             image_np=bootstrap_image_np,
             box_xyxy=coarse_bbox,
         )
@@ -174,7 +174,7 @@ class Sam2MaskingPipeline:
 
         # Step 4: SAM2 video predictor propagates mask across all frames
         print("Running SAM2 video propagation across all frames...")
-        frame_masks = predictor.predict_video(
+        frame_masks = predictor.predict_video_from_mask(
             image_paths=image_paths,
             bootstrap_frame_idx=bootstrap_frame_idx,
             bootstrap_mask=precise_mask,

@@ -96,7 +96,7 @@ def _build_sam2_from_hf(model_id: str, device: str, for_video: bool = False):
     return model
 
 
-class Sam2Predictor:
+class Sam2MaskPredictor:
     """SAM2 image and video prediction for the masking pipeline."""
 
     def __init__(self, cfg):
@@ -116,7 +116,7 @@ class Sam2Predictor:
             model_id, self.device, for_video=True
         )
 
-    def predict_image(self, image_np: np.ndarray, box_xyxy: list) -> np.ndarray:
+    def predict_image_from_bbox(self, image_np: np.ndarray, box_xyxy: list) -> np.ndarray:
         """Run SAM2 image predictor on a single image with a bbox prompt.
 
         Returns the best binary mask (H, W) as a boolean numpy array.
@@ -134,7 +134,50 @@ class Sam2Predictor:
         best_idx = int(np.argmax(scores))
         return masks[best_idx].astype(bool)
 
-    def predict_video(
+    def predict_image_from_mask(self, image_np: np.ndarray, prompt_mask: np.ndarray) -> np.ndarray:
+        if not prompt_mask.any():
+            return np.zeros(prompt_mask.shape, dtype=bool)
+
+        # SAM2 expects a low-res (1, 256, 256) float32 logit mask as input.
+        mask_tensor = torch.from_numpy(prompt_mask.astype(np.float32)).unsqueeze(0).unsqueeze(0)
+        mask_input = torch.nn.functional.interpolate(
+            mask_tensor, size=(256, 256), mode="bilinear", align_corners=False
+        ).squeeze(0).numpy()  # (1, 256, 256)
+
+        with torch.inference_mode(), torch.autocast(
+            device_type="cuda" if str(self.device).startswith("cuda") else "cpu",
+            dtype=torch.bfloat16,
+            enabled=str(self.device).startswith("cuda"),
+        ):
+            self.image_predictor.set_image(image_np)
+            masks, scores, _ = self.image_predictor.predict(
+                mask_input=mask_input,
+                multimask_output=False,
+            )
+        return masks[0].astype(bool)
+
+    def predict_image_from_points(self, image_np: np.ndarray, points_xy: list) -> np.ndarray:
+        if len(points_xy) == 0:
+            return np.zeros(image_np.shape[:2], dtype=bool)
+
+        point_coords = np.array(points_xy, dtype=np.float32)   # (N, 2)
+        point_labels = np.ones(len(points_xy), dtype=np.int32)  # all foreground
+
+        with torch.inference_mode(), torch.autocast(
+            device_type="cuda" if str(self.device).startswith("cuda") else "cpu",
+            dtype=torch.bfloat16,
+            enabled=str(self.device).startswith("cuda"),
+        ):
+            self.image_predictor.set_image(image_np)
+            masks, scores, _ = self.image_predictor.predict(
+                point_coords=point_coords,
+                point_labels=point_labels,
+                multimask_output=True,
+            )
+        best_idx = int(np.argmax(scores))
+        return masks[best_idx].astype(bool)
+
+    def predict_video_from_mask(
         self,
         image_paths: list,
         bootstrap_frame_idx: int,
