@@ -1,9 +1,25 @@
 import os
+import re
 
 import cv2
 import numpy as np
 
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+def _natural_image_sort_key(path):
+    """Return a natural-sort key for image filenames with embedded digits."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    parts = re.split(r"(\d+)", stem)
+    normalized_parts = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isdigit():
+            normalized_parts.append((0, int(part)))
+        else:
+            normalized_parts.append((1, part.lower()))
+    return normalized_parts, os.path.basename(path).lower()
 
 
 def create_foreground_mask(
@@ -122,13 +138,7 @@ def list_input_images(input_dir):
         ext = os.path.splitext(filename)[1].lower()
         if os.path.isfile(path) and ext in VALID_EXTENSIONS:
             image_paths.append(path)
-    try:
-        return sorted(
-            image_paths,
-            key=lambda path: int(os.path.splitext(os.path.basename(path))[0]),
-        )
-    except ValueError:
-        return sorted(image_paths)
+    return sorted(image_paths, key=_natural_image_sort_key)
 
 
 def find_bootstrap_image(image_paths, bootstrap_stem):
