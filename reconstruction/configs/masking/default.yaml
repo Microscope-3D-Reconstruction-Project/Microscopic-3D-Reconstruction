@@ -6,6 +6,7 @@ random_seed: 0
 # Input / output paths
 input_paths:
   images_dir: ${...output_dir}/${...experiment_name}/focus_stack/focus_stacked_images
+  valid_regions_dir: ${...output_dir}/${...experiment_name}/focus_stack/focus_stacked_masks
 
 output_paths:
   output_dir: ${..output_dir}/${..experiment_name}/masking
@@ -20,7 +21,7 @@ bootstrap:
 
 # SAM2
 sam2:
-  model_id: facebook/sam2.1-hiera-small
+  model_id: facebook/sam2.1-hiera-large
   device: cuda
   offload_video_to_cpu: true
 

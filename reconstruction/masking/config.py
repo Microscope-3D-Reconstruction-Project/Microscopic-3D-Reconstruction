@@ -6,7 +6,8 @@ from omegaconf import DictConfig, OmegaConf
 
 @dataclass
 class Sam2MaskingConfig:
-    input_dir: str
+    images_dir: str
+    valid_regions_dir: str
     output_dir: str
     random_seed: int = 0
     masks_subdir: str = "masks"
@@ -16,8 +17,8 @@ class Sam2MaskingConfig:
     bootstrap_stem: str = "scan00"
     bbox_padding: int = 20
 
-    sam2_model_id: str = "facebook/sam2.1-hiera-small"
-    device: Optional[str] = None
+    sam2_model_id: str = "facebook/sam2.1-hiera-large"
+    device: Optional[str] = "cuda"
     offload_video_to_cpu: bool = True
 
     overlay_alpha: float = 0.4
@@ -34,7 +35,8 @@ def build_config(cfg_raw: DictConfig) -> Sam2MaskingConfig:
     visualization = cfg["visualization"]
 
     return Sam2MaskingConfig(
-        input_dir=input_paths["images_dir"],
+        images_dir=input_paths["images_dir"],
+        valid_regions_dir=input_paths["valid_regions_dir"],
         output_dir=output_paths["output_dir"],
         random_seed=cfg["random_seed"],
         masks_subdir=output_paths["masks_subdir"],

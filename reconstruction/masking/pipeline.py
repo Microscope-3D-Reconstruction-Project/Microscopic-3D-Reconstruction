@@ -57,13 +57,13 @@ class Sam2MaskingPipeline:
             os.makedirs(d, exist_ok=True)
 
         # Step 1: Load images and find bootstrap (scan00)
-        image_paths = list_input_images(args.input_dir)
+        image_paths = list_input_images(args.images_dir)
         if not image_paths:
-            raise FileNotFoundError(f"No image files found in {args.input_dir!r}.")
+            raise FileNotFoundError(f"No image files found in {args.images_dir!r}.")
 
         bootstrap_path = find_bootstrap_image(image_paths, args.bootstrap_stem)
         if bootstrap_path is None:
-            raise FileNotFoundError(f"No bootstrap image found in {args.input_dir!r}.")
+            raise FileNotFoundError(f"No bootstrap image found in {args.images_dir!r}.")
         bootstrap_frame_idx = image_paths.index(bootstrap_path)
         bootstrap_base_name = os.path.splitext(os.path.basename(bootstrap_path))[0]
 
