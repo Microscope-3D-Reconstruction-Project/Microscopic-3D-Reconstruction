@@ -27,6 +27,7 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from .config import Config
+from .metrics import GSS, LSS
 
 
 def _apply_eval_mask(colors, pixels, masks):
@@ -85,6 +86,8 @@ class Evaluator:
         cfg = self.cfg
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
         self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
+        self.gss = GSS().to(self.device)
+        self.lss = LSS().to(self.device)
         if cfg.lpips_net == "alex":
             self.lpips = LearnedPerceptualImagePatchSimilarity(
                 net_type="alex", normalize=True
@@ -159,12 +162,17 @@ class Evaluator:
                 metrics["psnr"].append(self.psnr(colors_p, pixels_p))
                 metrics["ssim"].append(self.ssim(colors_p, pixels_p))
                 metrics["lpips"].append(self.lpips(colors_p, pixels_p))
+                metrics["gss"].append(self.gss(pixels_p, colors_p))
+                metrics["lss"].append(self.lss(pixels_p, colors_p))
                 if cfg.use_bilateral_grid:
                     cc_colors = self.color_correct(colors, pixels)
+                    cc_colors, _ = _apply_eval_mask(cc_colors, pixels, eval_mask)
                     cc_colors_p = cc_colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
                     metrics["cc_psnr"].append(self.psnr(cc_colors_p, pixels_p))
                     metrics["cc_ssim"].append(self.ssim(cc_colors_p, pixels_p))
                     metrics["cc_lpips"].append(self.lpips(cc_colors_p, pixels_p))
+                    metrics["cc_gss"].append(self.gss(pixels_p, cc_colors_p))
+                    metrics["cc_lss"].append(self.lss(pixels_p, cc_colors_p))
 
         if self.world_rank == 0:
             ellipse_time /= len(valloader)
@@ -175,13 +183,15 @@ class Evaluator:
 
             base = (
                 f"PSNR: {stats['psnr']:.3f}, SSIM: {stats['ssim']:.4f}, "
-                f"LPIPS: {stats['lpips']:.3f} "
+                f"LPIPS: {stats['lpips']:.3f}, GSS: {stats['gss']:.4f}, "
+                f"LSS: {stats['lss']:.4f} "
             )
             extra = ""
             if cfg.use_bilateral_grid and "cc_psnr" in stats:
                 extra = (
                     f"CC_PSNR: {stats['cc_psnr']:.3f}, CC_SSIM: {stats['cc_ssim']:.4f}, "
-                    f"CC_LPIPS: {stats['cc_lpips']:.3f} "
+                    f"CC_LPIPS: {stats['cc_lpips']:.3f}, CC_GSS: {stats['cc_gss']:.4f}, "
+                    f"CC_LSS: {stats['cc_lss']:.4f} "
                 )
             print(
                 base

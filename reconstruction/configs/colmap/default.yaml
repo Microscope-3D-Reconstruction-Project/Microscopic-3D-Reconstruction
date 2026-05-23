@@ -19,13 +19,13 @@ feat_extract_match:
     output_dir: ${...output_dir}/${...experiment_name}
     database_filename: database.db
   extraction:
-    device: cuda
+    device: cpu
     camera_model: OPENCV
     num_threads: 1
     max_num_features: 8192
     estimate_affine_shape: true
   matching:
-    use_gpu: true
+    use_gpu: false
     num_threads: 1
     guided_matching: true
 
