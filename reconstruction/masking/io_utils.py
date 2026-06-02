@@ -83,3 +83,24 @@ def write_bootstrap_debug_metadata(output_dir, metadata):
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
     print(f"Wrote bootstrap debug metadata: {metadata_path}")
+
+
+def save_point_visualization(image, points_xy, output_dir, base_name, color=(0, 255, 0)):
+    point_image = image.copy()
+    draw = ImageDraw.Draw(point_image)
+    radius = max(3, round(min(image.size) * 0.004))
+    for x_coord, y_coord in points_xy:
+        draw.ellipse(
+            (
+                x_coord - radius,
+                y_coord - radius,
+                x_coord + radius,
+                y_coord + radius,
+            ),
+            fill=tuple(color),
+            outline=tuple(color),
+        )
+
+    out_path = os.path.join(output_dir, f"{base_name}_points.png")
+    point_image.save(out_path, format="PNG")
+    print(f"  Saved point visualization: {out_path}")

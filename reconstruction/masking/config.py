@@ -12,10 +12,16 @@ class Sam2MaskingConfig:
     random_seed: int = 0
     masks_subdir: str = "masks"
 
-    min_contour_area: float = 100.0
-    morph_kernel_size: int = 5
     bootstrap_stem: str = "scan00"
-    bbox_padding: int = 20
+    focus_mask_border_padding: int = 8
+    edge_blur_kernel_size: int = 5
+    canny_threshold1: float = 25.0
+    canny_threshold2: float = 150.0
+    point_sampling_scale: float = 0.9
+    point_prompt_count: int = 32
+    firstpass_shrink_scale: float = 0.9
+    points_refine_kernel_size: int = 9
+    points_refine_dilate_iterations: int = 1
 
     sam2_model_id: str = "facebook/sam2.1-hiera-large"
     device: Optional[str] = "cuda"
@@ -40,10 +46,16 @@ def build_config(cfg_raw: DictConfig) -> Sam2MaskingConfig:
         output_dir=output_paths["output_dir"],
         random_seed=cfg["random_seed"],
         masks_subdir=output_paths["masks_subdir"],
-        min_contour_area=bootstrap["min_contour_area"],
-        morph_kernel_size=bootstrap["morph_kernel_size"],
         bootstrap_stem=bootstrap["bootstrap_stem"],
-        bbox_padding=bootstrap["bbox_padding"],
+        focus_mask_border_padding=bootstrap["focus_mask_border_padding"],
+        edge_blur_kernel_size=bootstrap["edge_blur_kernel_size"],
+        canny_threshold1=bootstrap["canny_threshold1"],
+        canny_threshold2=bootstrap["canny_threshold2"],
+        point_sampling_scale=bootstrap["point_sampling_scale"],
+        point_prompt_count=bootstrap["point_prompt_count"],
+        firstpass_shrink_scale=bootstrap["firstpass_shrink_scale"],
+        points_refine_kernel_size=bootstrap["points_refine_kernel_size"],
+        points_refine_dilate_iterations=bootstrap["points_refine_dilate_iterations"],
         sam2_model_id=sam2["model_id"],
         device=sam2["device"],
         offload_video_to_cpu=sam2["offload_video_to_cpu"],

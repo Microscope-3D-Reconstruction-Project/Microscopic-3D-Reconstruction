@@ -116,11 +116,13 @@ class Sam2MaskPredictor:
             model_id, self.device, for_video=True
         )
 
-    def predict_image_from_bbox(self, image_np: np.ndarray, box_xyxy: list) -> np.ndarray:
-        """Run SAM2 image predictor on a single image with a bbox prompt.
+    def predict_image_from_points(self, image_np: np.ndarray, points_xy: np.ndarray) -> np.ndarray:
+        if len(points_xy) == 0:
+            return np.zeros(image_np.shape[:2], dtype=bool)
 
-        Returns the best binary mask (H, W) as a boolean numpy array.
-        """
+        point_coords = np.array(points_xy, dtype=np.float32)   # (N, 2)
+        point_labels = np.ones(len(points_xy), dtype=np.int32)  # all foreground
+
         with torch.inference_mode(), torch.autocast(
             device_type="cuda" if str(self.device).startswith("cuda") else "cpu",
             dtype=torch.bfloat16,
@@ -128,7 +130,8 @@ class Sam2MaskPredictor:
         ):
             self.image_predictor.set_image(image_np)
             masks, scores, _ = self.image_predictor.predict(
-                box=np.array(box_xyxy, dtype=np.float32),
+                point_coords=point_coords,
+                point_labels=point_labels,
                 multimask_output=True,
             )
         best_idx = int(np.argmax(scores))
@@ -155,27 +158,6 @@ class Sam2MaskPredictor:
                 multimask_output=False,
             )
         return masks[0].astype(bool)
-
-    def predict_image_from_points(self, image_np: np.ndarray, points_xy: list) -> np.ndarray:
-        if len(points_xy) == 0:
-            return np.zeros(image_np.shape[:2], dtype=bool)
-
-        point_coords = np.array(points_xy, dtype=np.float32)   # (N, 2)
-        point_labels = np.ones(len(points_xy), dtype=np.int32)  # all foreground
-
-        with torch.inference_mode(), torch.autocast(
-            device_type="cuda" if str(self.device).startswith("cuda") else "cpu",
-            dtype=torch.bfloat16,
-            enabled=str(self.device).startswith("cuda"),
-        ):
-            self.image_predictor.set_image(image_np)
-            masks, scores, _ = self.image_predictor.predict(
-                point_coords=point_coords,
-                point_labels=point_labels,
-                multimask_output=True,
-            )
-        best_idx = int(np.argmax(scores))
-        return masks[best_idx].astype(bool)
 
     def predict_video_from_mask(
         self,
@@ -222,6 +204,86 @@ class Sam2MaskPredictor:
                 frame_idx=bootstrap_frame_idx,
                 obj_id=1,
                 mask=mask_tensor,
+            )
+
+            frame_masks = {}
+
+            print("Propagating forward from bootstrap frame...")
+            for (
+                frame_idx,
+                _obj_ids,
+                video_res_masks,
+            ) in self.video_predictor.propagate_in_video(
+                inference_state, start_frame_idx=bootstrap_frame_idx
+            ):
+                frame_masks[frame_idx] = (
+                    (video_res_masks[0] > 0).squeeze().cpu().numpy()
+                )
+
+            if bootstrap_frame_idx > 0:
+                print("Propagating backward to frame 0...")
+                for (
+                    frame_idx,
+                    _obj_ids,
+                    video_res_masks,
+                ) in self.video_predictor.propagate_in_video(
+                    inference_state,
+                    start_frame_idx=bootstrap_frame_idx,
+                    reverse=True,
+                ):
+                    if frame_idx not in frame_masks:
+                        frame_masks[frame_idx] = (
+                            (video_res_masks[0] > 0).squeeze().cpu().numpy()
+                        )
+
+            return frame_masks
+        finally:
+            shutil.rmtree(jpeg_dir, ignore_errors=True)
+
+    def predict_video_from_points(
+        self,
+        image_paths: list,
+        bootstrap_frame_idx: int,
+        points_xy: np.ndarray,
+        offload_to_cpu: bool = True,
+    ) -> dict:
+        """Run SAM2 video predictor over all frames using point prompts on the bootstrap frame.
+
+        Args:
+            image_paths: sorted list of all input image paths.
+            bootstrap_frame_idx: index in image_paths of the bootstrap image.
+            points_xy: (N, 2) float32 array of (x, y) foreground point prompts.
+            offload_to_cpu: if True, offload video and state tensors to CPU to
+                conserve GPU memory.
+
+        Returns:
+            dict mapping int frame_idx (0-based in image_paths order) to a
+            boolean numpy mask array (H, W).
+        """
+        jpeg_dir = tempfile.mkdtemp(prefix="sam2_frames_")
+        try:
+            print(f"Writing {len(image_paths)} JPEG frames to temp dir...")
+            for i, path in enumerate(image_paths):
+                img = Image.open(path).convert("RGB")
+                img.save(
+                    os.path.join(jpeg_dir, f"{i:05d}.jpg"), format="JPEG", quality=95
+                )
+
+            print("Initializing SAM2 video inference state...")
+            inference_state = self.video_predictor.init_state(
+                video_path=jpeg_dir,
+                offload_video_to_cpu=offload_to_cpu,
+                offload_state_to_cpu=offload_to_cpu,
+            )
+
+            point_coords = np.array(points_xy, dtype=np.float32)   # (N, 2)
+            point_labels = np.ones(len(points_xy), dtype=np.int32)  # all foreground
+            self.video_predictor.add_new_points_or_box(
+                inference_state=inference_state,
+                frame_idx=bootstrap_frame_idx,
+                obj_id=1,
+                points=point_coords,
+                labels=point_labels,
             )
 
             frame_masks = {}

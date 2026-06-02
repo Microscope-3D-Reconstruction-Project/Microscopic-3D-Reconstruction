@@ -31,9 +31,9 @@ feat_extract_match:
 
 # ── Reconstruction ────────────────────────────────────────────────────────────
 reconstruction:
-  mode: triangulate          # triangulate | automatic
-  load_prior_poses: false    # automatic mode only: use known robot poses as prior
-  load_prior_intrinsics: false  # use known camera intrinsics as prior
+  mode: automatic          # triangulate | automatic
+  load_prior_poses: true    # automatic mode only: use known robot poses as prior
+  load_prior_intrinsics: true  # use known camera intrinsics as prior
   refine_intrinsics: true    # whether to refine camera intrinsics during bundle adjustment
   input_paths:
     poses_json: ${...output_dir}/${...experiment_name}/poses.json
