@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -76,27 +77,6 @@ def _timed_stage(log_path: Path, stage_name: str):
         _write_timing(log_path, stage_name, status, duration)
         print(f"{stage_name} {status} in {duration:.2f} seconds")
 
-
-def _requires_masks(cfg: DictConfig) -> bool:
-    return cfg.run.colmap or cfg.run.gs_3d
-
-
-def _validate_existing_masks(cfg: DictConfig) -> None:
-    if cfg.run.masking or not _requires_masks(cfg):
-        return
-
-    masks_dir = os.path.join(
-        cfg.masking.output_paths.output_dir,
-        cfg.masking.output_paths.masks_subdir,
-    )
-    if not os.path.isdir(masks_dir):
-        raise FileNotFoundError(
-            "run.masking is false, but downstream stages are enabled and "
-            f"expected existing masks at {masks_dir!r}. Run the masking "
-            "stage first or enable run.masking."
-        )
-
-
 @hydra.main(config_path="configs", config_name="pipeline", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     timing_log_path = _init_timing_log(cfg)
@@ -108,12 +88,27 @@ def main(cfg: DictConfig) -> None:
     if cfg.run.masking:
         with _timed_stage(timing_log_path, "masking"):
             run_sam2_masking(cfg.masking)
-    else:
-        _validate_existing_masks(cfg)
-
+    
     if cfg.run.colmap:
-        with _timed_stage(timing_log_path, "colmap"):
+        colmap_status = "success"
+        try:
             run_colmap_pipeline(cfg.colmap)
+        except BaseException:
+            colmap_status = "failed"
+            raise
+        finally:
+            colmap_timings_path = (
+                Path(cfg.colmap.reconstruction.output_paths.output_dir)
+                / "colmap"
+                / "timings.json"
+            )
+            colmap_duration = 0.0
+            if colmap_timings_path.exists():
+                with open(colmap_timings_path) as f:
+                    timings = json.load(f)
+                colmap_duration = sum(timings.values())
+            _write_timing(timing_log_path, "colmap", colmap_status, colmap_duration)
+            print(f"colmap {colmap_status} in {colmap_duration:.2f} seconds")
 
     if cfg.run.gs_3d:
         with _timed_stage(timing_log_path, "gs_3d"):

@@ -32,6 +32,7 @@ class ScanPaths:
     recon_database_path: Path  # input: database.db
     model_dir: Path  # output: sparse model directory
     recon_output_dir: Path  # output: parent dir (for temp files)
+    colmap_dir: Path  # output: colmap summary/timings directory
 
 
 def create_scan_paths(cfg: DictConfig) -> ScanPaths:
@@ -40,6 +41,9 @@ def create_scan_paths(cfg: DictConfig) -> ScanPaths:
 
     recon_out_dir = Path(cfg.reconstruction.output_paths.output_dir)
     recon_out_dir.mkdir(parents=True, exist_ok=True)
+
+    colmap_dir = recon_out_dir / "colmap"
+    colmap_dir.mkdir(parents=True, exist_ok=True)
 
     return ScanPaths(
         feat_images_path=Path(cfg.feat_extract_match.input_paths.images_dir),
@@ -54,7 +58,28 @@ def create_scan_paths(cfg: DictConfig) -> ScanPaths:
         recon_database_path=Path(cfg.reconstruction.input_paths.database_filepath),
         model_dir=recon_out_dir / cfg.reconstruction.output_paths.model_dirname,
         recon_output_dir=recon_out_dir,
+        colmap_dir=colmap_dir,
     )
+
+
+def _init_timings(colmap_dir: Path) -> None:
+    timings_path = colmap_dir / "timings.json"
+    if not timings_path.exists():
+        with open(timings_path, "w") as f:
+            json.dump(
+                {"feature_extraction": 0, "feature_matching": 0, "reconstruction": 0},
+                f,
+                indent=2,
+            )
+
+
+def _write_timing_entry(colmap_dir: Path, key: str, value: float) -> None:
+    timings_path = colmap_dir / "timings.json"
+    with open(timings_path) as f:
+        timings = json.load(f)
+    timings[key] = value
+    with open(timings_path, "w") as f:
+        json.dump(timings, f, indent=2)
 
 
 def read_poses_dict(poses_json_path, is_camera_to_world=False, as_quaternion=False):
@@ -271,9 +296,9 @@ def run_feature_extraction_and_matching(paths: ScanPaths, cfg: DictConfig) -> No
         device=cfg.feat_extract_match.extraction.device,
     )
     extraction_end_time = time.time()
-    print(
-        f"Feature extraction took {extraction_end_time - extraction_start_time:.2f} seconds"
-    )
+    extraction_duration = extraction_end_time - extraction_start_time
+    print(f"Feature extraction took {extraction_duration:.2f} seconds")
+    _write_timing_entry(paths.colmap_dir, "feature_extraction", extraction_duration)
 
     # Load prior intrinsics if enabled
     intrinsics_params = None
@@ -299,9 +324,9 @@ def run_feature_extraction_and_matching(paths: ScanPaths, cfg: DictConfig) -> No
         device="cuda" if cfg.feat_extract_match.matching.use_gpu else "cpu",
     )
     matching_end_time = time.time()
-    print(
-        f"Feature matching took {matching_end_time - matching_start_time:.2f} seconds"
-    )
+    matching_duration = matching_end_time - matching_start_time
+    print(f"Feature matching took {matching_duration:.2f} seconds")
+    _write_timing_entry(paths.colmap_dir, "feature_matching", matching_duration)
 
 
 def run_triangulation(paths: ScanPaths, cfg: DictConfig) -> Path:
@@ -348,7 +373,10 @@ def run_triangulation(paths: ScanPaths, cfg: DictConfig) -> Path:
         options=triangulation_options,
         refine_intrinsics=cfg.reconstruction.refine_intrinsics,
     )
-    print(result.summary())
+    summary = result.summary()
+    print(summary)
+    with open(paths.colmap_dir / "reconstruction_summary.txt", "w") as f:
+        f.write(summary)
 
     shutil.rmtree(reference_model_path)
     return paths.model_dir
@@ -431,8 +459,13 @@ def run_automatic_reconstruction(paths: ScanPaths, cfg: DictConfig) -> Path:
             input_path=dummy_model_path,
         )
         shutil.rmtree(dummy_model_path)
+    summary_lines = []
     for idx, rec in recs.items():
-        logging.info(f"#{idx} {rec.summary()}")
+        summary = f"#{idx} {rec.summary()}"
+        logging.info(summary)
+        summary_lines.append(summary)
+    with open(paths.colmap_dir / "reconstruction_summary.txt", "w") as f:
+        f.write("\n".join(summary_lines))
 
     return paths.model_dir
 
@@ -441,6 +474,7 @@ def run_colmap_pipeline(cfg: DictConfig) -> None:
     """Run the COLMAP pipeline. Can be called standalone or from run_pipeline.py."""
     pycolmap.set_random_seed(cfg.random_seed)
     paths = create_scan_paths(cfg)
+    _init_timings(paths.colmap_dir)
 
     if cfg.run.colmap_feat_extract_match:
         run_feature_extraction_and_matching(paths, cfg)
@@ -452,6 +486,8 @@ def run_colmap_pipeline(cfg: DictConfig) -> None:
         else:
             output_model_dir = run_automatic_reconstruction(paths, cfg)
         reconstruction_end_time = time.time()
+        reconstruction_duration = reconstruction_end_time - reconstruction_start_time
+        _write_timing_entry(paths.colmap_dir, "reconstruction", reconstruction_duration)
 
         if (
             cfg.reconstruction.mode == "automatic"
@@ -459,12 +495,12 @@ def run_colmap_pipeline(cfg: DictConfig) -> None:
         ):
             print(
                 f"Total time for automatic mode with prior poses: "
-                f"{reconstruction_end_time - reconstruction_start_time:.2f} seconds"
+                f"{reconstruction_duration:.2f} seconds"
             )
         else:
             print(
                 f"Total time for {cfg.reconstruction.mode} mode: "
-                f"{reconstruction_end_time - reconstruction_start_time:.2f} seconds"
+                f"{reconstruction_duration:.2f} seconds"
             )
 
         output_model = pycolmap.Reconstruction(output_model_dir)
