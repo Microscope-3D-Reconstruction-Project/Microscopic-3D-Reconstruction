@@ -48,25 +48,22 @@ def compute_sharpness_scores(image_files: list[str], method: str) -> list[float]
 
 
 def find_sharpest_image_index(
-    image_files: list[str], method: str, scan_name: str | None = None
-) -> tuple[int, list[float]]:
-    scores = compute_sharpness_scores(image_files, method)
+    scores: list[float], scan_name: str | None = None
+) -> int:
     sharpest_idx = int(np.argmax(scores))
     prefix = f"{scan_name}: " if scan_name is not None else ""
     print(
         f"{prefix}sharpest image is index {sharpest_idx} "
-        f"({image_files[sharpest_idx]}) with {method} score {scores[sharpest_idx]:.6f}."
+        f"with score {scores[sharpest_idx]:.6f}."
     )
-    return sharpest_idx, scores
+    return sharpest_idx
 
 
 def find_sharpest_window_reference_index(
-    image_files: list[str],
-    method: str,
+    scores: list[float],
     window_size: int | None,
     scan_name: str | None = None,
-) -> tuple[int, list[float], list[int], list[float]]:
-    scores = compute_sharpness_scores(image_files, method)
+) -> tuple[int, list[int], list[float]]:
     actual_window_size = (
         len(scores) if window_size is None else min(window_size, len(scores))
     )
@@ -92,19 +89,16 @@ def find_sharpest_window_reference_index(
     prefix = f"{scan_name}: " if scan_name is not None else ""
     print(
         f"{prefix}sharpest window starts at index {best_start_idx}, "
-        f"ends at index {selected_indices[-1]}, has uniform "
-        f"{method} score "
-        f"{best_score:.6f}, and uses reference index {reference_idx} "
-        f"({image_files[reference_idx]})."
+        f"ends at index {selected_indices[-1]}, "
+        f"score {best_score:.6f}, reference index {reference_idx}."
     )
-    return reference_idx, scores, selected_indices, window_scores.tolist()
+    return reference_idx, selected_indices, window_scores.tolist()
 
 
 def find_gaussian_fit_window_reference_index(
-    image_files: list[str],
-    method: str,
+    scores: list[float],
     scan_name: str | None = None,
-) -> tuple[int, list[float], list[int], list[float]]:
+) -> tuple[int, list[int], list[float]]:
     raise NotImplementedError(
         "gaussian_fit_window selection mode is not yet implemented."
     )
@@ -116,6 +110,7 @@ def save_sharpness_bar_chart(
     reference_idx: int,
     selected_indices: list[int],
     title: str | None = None,
+    scores_preprocessed: list[float] | None = None,
 ) -> None:
     import matplotlib
 
@@ -134,15 +129,30 @@ def save_sharpness_bar_chart(
         else:
             colors.append("#b0b0b0")
 
-    fig, ax = plt.subplots(figsize=(10, 5))
+    has_preprocessed = scores_preprocessed is not None
+    if has_preprocessed:
+        fig, (ax_before, ax_after) = plt.subplots(1, 2, figsize=(18, 5))
+    else:
+        fig, ax_before = plt.subplots(figsize=(10, 5))
+
     indices = list(range(len(scores)))
-    ax.bar(indices, scores, color=colors)
-    ax.set_xlabel("Image index")
-    ax.set_ylabel("Sharpness score")
-    if title is not None:
-        ax.set_title(title)
-    ax.set_xticks(indices)
-    ax.grid(axis="y", alpha=0.3)
+    ax_before.bar(indices, scores, color=colors)
+    ax_before.set_xlabel("Image index")
+    ax_before.set_ylabel("Sharpness score")
+    ax_before.set_title("Before pre-processing" if has_preprocessed else (title or ""))
+    ax_before.set_xticks(indices)
+    ax_before.grid(axis="y", alpha=0.3)
+
+    if has_preprocessed:
+        ax_after.bar(indices, scores_preprocessed, color=colors)
+        ax_after.set_xlabel("Image index")
+        ax_after.set_ylabel("Sharpness score")
+        ax_after.set_title("After pre-processing")
+        ax_after.set_xticks(indices)
+        ax_after.grid(axis="y", alpha=0.3)
+        if title is not None:
+            fig.suptitle(title)
+
     fig.tight_layout()
     fig.savefig(output_path)
     plt.close(fig)

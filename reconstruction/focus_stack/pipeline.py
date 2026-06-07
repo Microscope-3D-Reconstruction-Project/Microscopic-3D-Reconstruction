@@ -12,6 +12,7 @@ import numpy as np
 from focus_stack.sharpness_scoring import (
     VALID_SHARPNESS_METHODS,
     VALID_SHARPNESS_SELECTION_MODES,
+    compute_sharpness_scores,
     find_sharpest_image_index,
     find_sharpest_window_reference_index,
     save_sharpness_bar_chart,
@@ -196,6 +197,18 @@ def run_focus_stack(cfg: DictConfig) -> None:
             key=_natural_sort_key,
         )
 
+    for path in (out_image_dir, out_depth_dir, out_mask_dir, out_sharpness_dir, out_preprocessed_dir):
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+    os.makedirs(out_image_dir, exist_ok=True)
+    os.makedirs(out_depth_dir, exist_ok=True)
+    os.makedirs(out_mask_dir, exist_ok=True)
+    os.makedirs(out_sharpness_dir, exist_ok=True)
+    os.makedirs(out_preprocessed_dir, exist_ok=True)
+
+    preprocess_median = bool(cfg.get("median_blur_input", False))
+    preprocess_lowpass = bool(cfg.get("low_pass_input", False))
+
     scan_inputs = []
     for subdir in scan_dirs:
         subdir_path = os.path.join(dataset_dir, subdir)
@@ -208,37 +221,67 @@ def run_focus_stack(cfg: DictConfig) -> None:
             # print(f"No .jpg files found in {subdir_path}, skipping.")
             continue
 
-        sharpness_scores = None
+        scores_original = compute_sharpness_scores(image_files, sharpness_score)
+
+        if preprocess_median or preprocess_lowpass:
+            scan_preprocess_dir = os.path.join(out_preprocessed_dir, subdir)
+            os.makedirs(scan_preprocess_dir, exist_ok=True)
+            input_files = []
+            for img_path in image_files:
+                img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                if img is not None:
+                    if preprocess_median:
+                        k = int(cfg.get("median_blur_kernel_size", 5))
+                        img = cv2.medianBlur(img, k)
+                    if preprocess_lowpass:
+                        k = int(cfg.get("low_pass_input_kernel_size", 5))
+                        img = cv2.GaussianBlur(img, (k, k), 0)
+                    out_path = os.path.join(scan_preprocess_dir, os.path.basename(img_path))
+                    cv2.imwrite(out_path, img)
+                    input_files.append(out_path)
+                else:
+                    input_files.append(img_path)
+            if preprocess_median:
+                print(f"  Applied median blur (kernel={int(cfg.get('median_blur_kernel_size', 5))}) to {len(input_files)} input images.")
+            if preprocess_lowpass:
+                print(f"  Applied Gaussian blur (kernel={int(cfg.get('low_pass_input_kernel_size', 5))}) to {len(input_files)} input images.")
+            scores_for_selection = compute_sharpness_scores(input_files, sharpness_score)
+        else:
+            input_files = image_files
+            scores_for_selection = scores_original
+
         if sharpness_selection_mode == "fixed_window":
-            (
-                ref_idx,
-                sharpness_scores,
-                selected_indices,
-                _,
-            ) = find_sharpest_window_reference_index(
-                image_files,
-                sharpness_score,
-                focal_stack_size,
-                scan_name=subdir,
+            ref_idx, selected_indices, _ = find_sharpest_window_reference_index(
+                scores_for_selection, focal_stack_size, scan_name=subdir
             )
             selected_image_files, selected_ref_idx = _select_images_by_indices(
-                image_files, selected_indices, ref_idx
+                input_files, selected_indices, ref_idx
             )
         elif sharpness_selection_mode == "gaussian_fit_window":
             raise NotImplementedError(
                 "gaussian_fit_window selection mode is not yet implemented."
             )
         else:
-            ref_idx, sharpness_scores = find_sharpest_image_index(
-                image_files, sharpness_score, scan_name=subdir
-            )
+            ref_idx = find_sharpest_image_index(scores_for_selection, scan_name=subdir)
             (
                 selected_image_files,
                 selected_ref_idx,
                 selected_indices,
             ) = _select_focus_stack_images(
-                image_files, ref_idx, focal_stack_size, scan_name=subdir
+                input_files, ref_idx, focal_stack_size, scan_name=subdir
             )
+
+        save_sharpness_bar_chart(
+            scores_original,
+            os.path.join(out_sharpness_dir, f"{subdir}.png"),
+            reference_idx=ref_idx,
+            selected_indices=selected_indices,
+            title=(
+                f"{subdir} sharpness scores "
+                f"({sharpness_score}, {sharpness_selection_mode})"
+            ),
+            scores_preprocessed=scores_for_selection if (preprocess_median or preprocess_lowpass) else None,
+        )
 
         scan_inputs.append(
             (
@@ -248,19 +291,8 @@ def run_focus_stack(cfg: DictConfig) -> None:
                 ref_idx,
                 selected_image_files,
                 selected_ref_idx,
-                selected_indices,
-                sharpness_scores,
             )
         )
-
-    for path in (out_image_dir, out_depth_dir, out_mask_dir, out_sharpness_dir, out_preprocessed_dir):
-        if os.path.isdir(path):
-            shutil.rmtree(path)
-    os.makedirs(out_image_dir, exist_ok=True)
-    os.makedirs(out_depth_dir, exist_ok=True)
-    os.makedirs(out_mask_dir, exist_ok=True)
-    os.makedirs(out_sharpness_dir, exist_ok=True)
-    os.makedirs(out_preprocessed_dir, exist_ok=True)
 
     flags = []
     if params.full_resolution_align:
@@ -281,51 +313,10 @@ def run_focus_stack(cfg: DictConfig) -> None:
         ref_idx,
         selected_image_files,
         selected_ref_idx,
-        selected_indices,
-        sharpness_scores,
     ) in scan_inputs:
-        if sharpness_scores is not None:
-            save_sharpness_bar_chart(
-                sharpness_scores,
-                os.path.join(out_sharpness_dir, f"{subdir}.png"),
-                reference_idx=ref_idx,
-                selected_indices=selected_indices,
-                title=(
-                    f"{subdir} sharpness scores "
-                    f"({sharpness_score}, {sharpness_selection_mode})"
-                ),
-            )
-
         output_file = os.path.join(out_image_dir, f"{subdir}.png")
         depth_file = os.path.join(out_depth_dir, f"{subdir}.png")
         mask_file = os.path.join(out_mask_dir, f"{subdir}.png")
-
-        preprocess_median = bool(cfg.get("median_blur_input", False))
-        preprocess_lowpass = bool(cfg.get("low_pass_input", False))
-        if preprocess_median or preprocess_lowpass:
-            scan_preprocess_dir = os.path.join(out_preprocessed_dir, subdir)
-            os.makedirs(scan_preprocess_dir, exist_ok=True)
-            input_files = []
-            for img_path in selected_image_files:
-                img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-                if img is not None:
-                    if preprocess_median:
-                        k = int(cfg.get("median_blur_kernel_size", 5))
-                        img = cv2.medianBlur(img, k)
-                    if preprocess_lowpass:
-                        k = int(cfg.get("low_pass_input_kernel_size", 5))
-                        img = cv2.GaussianBlur(img, (k, k), 0)
-                    out_path = os.path.join(scan_preprocess_dir, os.path.basename(img_path))
-                    cv2.imwrite(out_path, img)
-                    input_files.append(out_path)
-                else:
-                    input_files.append(img_path)
-            if preprocess_median:
-                print(f"  Applied median blur (kernel={int(cfg.get('median_blur_kernel_size', 5))}) to {len(input_files)} input images.")
-            if preprocess_lowpass:
-                print(f"  Applied Gaussian blur (kernel={int(cfg.get('low_pass_input_kernel_size', 5))}) to {len(input_files)} input images.")
-        else:
-            input_files = selected_image_files
 
         cmd = (
             ["focus-stack"]
@@ -336,7 +327,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
                 f"--depthmap={depth_file}",
                 f"--output={output_file}",
             ]
-            + input_files
+            + selected_image_files
         )
         print(f"Running: {' '.join(cmd)}")
         subprocess.run(cmd, check=True)

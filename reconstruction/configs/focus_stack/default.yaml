@@ -33,7 +33,7 @@ focus_stack_params:
   no_contrast: true
 
 # ── Pre-processing ────────────────────────────────────────────────────────────
-median_blur_input: false       # apply median blur to input images before focus stacking
+median_blur_input: true       # apply median blur to input images before focus stacking
 median_blur_kernel_size: 5     # kernel size for median blur (must be odd)
 low_pass_input: false          # apply Gaussian blur to input images before focus stacking
 low_pass_input_kernel_size: 5  # kernel size for input Gaussian blur (must be odd)
