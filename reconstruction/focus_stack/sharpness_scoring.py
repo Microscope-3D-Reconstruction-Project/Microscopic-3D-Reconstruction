@@ -4,8 +4,7 @@ import cv2
 import numpy as np
 
 VALID_SHARPNESS_METHODS = ("laplacian", "tenengrad")
-VALID_SHARPNESS_SELECTION_MODES = ("image", "window")
-VALID_SHARPNESS_WINDOW_WEIGHTS = ("uniform", "gaussian")
+VALID_SHARPNESS_SELECTION_MODES = ("image", "fixed_window", "gaussian_fit_window")
 
 
 def _load_grayscale_image(image_file: str) -> np.ndarray:
@@ -65,16 +64,9 @@ def find_sharpest_window_reference_index(
     image_files: list[str],
     method: str,
     window_size: int | None,
-    window_weights: str = "flat",
-    gaussian_sigma: float | None = None,
     scan_name: str | None = None,
 ) -> tuple[int, list[float], list[int], list[float]]:
     scores = compute_sharpness_scores(image_files, method)
-    if window_weights not in VALID_SHARPNESS_WINDOW_WEIGHTS:
-        raise ValueError(
-            f"sharpness_window_weights must be one of "
-            f"{VALID_SHARPNESS_WINDOW_WEIGHTS}, got {window_weights!r}."
-        )
     actual_window_size = (
         len(scores) if window_size is None else min(window_size, len(scores))
     )
@@ -88,7 +80,7 @@ def find_sharpest_window_reference_index(
             "available images instead."
         )
 
-    kernel = _build_window_kernel(actual_window_size, window_weights, gaussian_sigma)
+    kernel = np.ones(actual_window_size, dtype=np.float64)
     window_scores = np.convolve(
         np.asarray(scores, dtype=np.float64), kernel, mode="valid"
     )
@@ -100,7 +92,7 @@ def find_sharpest_window_reference_index(
     prefix = f"{scan_name}: " if scan_name is not None else ""
     print(
         f"{prefix}sharpest window starts at index {best_start_idx}, "
-        f"ends at index {selected_indices[-1]}, has {window_weights}-weighted "
+        f"ends at index {selected_indices[-1]}, has uniform "
         f"{method} score "
         f"{best_score:.6f}, and uses reference index {reference_idx} "
         f"({image_files[reference_idx]})."
@@ -108,22 +100,14 @@ def find_sharpest_window_reference_index(
     return reference_idx, scores, selected_indices, window_scores.tolist()
 
 
-def _build_window_kernel(
-    window_size: int, window_weights: str, gaussian_sigma: float | None
-) -> np.ndarray:
-    if window_weights == "flat":
-        return np.ones(window_size, dtype=np.float64)
-
-    if gaussian_sigma is None:
-        gaussian_sigma = window_size / 6.0
-    if gaussian_sigma <= 0:
-        raise ValueError(
-            f"sharpness_gaussian_sigma must be positive or null, got {gaussian_sigma}."
-        )
-
-    x = np.arange(window_size, dtype=np.float64) - (window_size - 1) / 2.0
-    kernel = np.exp(-0.5 * (x / gaussian_sigma) ** 2)
-    return kernel / kernel.sum()
+def find_gaussian_fit_window_reference_index(
+    image_files: list[str],
+    method: str,
+    scan_name: str | None = None,
+) -> tuple[int, list[float], list[int], list[float]]:
+    raise NotImplementedError(
+        "gaussian_fit_window selection mode is not yet implemented."
+    )
 
 
 def save_sharpness_bar_chart(

@@ -12,7 +12,6 @@ import numpy as np
 from focus_stack.sharpness_scoring import (
     VALID_SHARPNESS_METHODS,
     VALID_SHARPNESS_SELECTION_MODES,
-    VALID_SHARPNESS_WINDOW_WEIGHTS,
     find_sharpest_image_index,
     find_sharpest_window_reference_index,
     save_sharpness_bar_chart,
@@ -129,29 +128,6 @@ def _validate_sharpness_selection_mode(sharpness_selection_mode: str) -> str:
     return sharpness_selection_mode
 
 
-def _validate_sharpness_window_weights(sharpness_window_weights: str) -> str:
-    if sharpness_window_weights not in VALID_SHARPNESS_WINDOW_WEIGHTS:
-        raise ValueError(
-            "sharpness_window_weights must be one of "
-            f"{VALID_SHARPNESS_WINDOW_WEIGHTS}, got {sharpness_window_weights!r}."
-        )
-    return sharpness_window_weights
-
-
-def _validate_sharpness_gaussian_sigma(
-    sharpness_gaussian_sigma: float | None,
-) -> float | None:
-    if sharpness_gaussian_sigma is None:
-        return None
-    sharpness_gaussian_sigma = float(sharpness_gaussian_sigma)
-    if sharpness_gaussian_sigma <= 0:
-        raise ValueError(
-            "sharpness_gaussian_sigma must be positive or null, got "
-            f"{sharpness_gaussian_sigma}."
-        )
-    return sharpness_gaussian_sigma
-
-
 def _select_focus_stack_images(
     image_files: list,
     ref_idx: int,
@@ -195,13 +171,6 @@ def run_focus_stack(cfg: DictConfig) -> None:
     sharpness_selection_mode = _validate_sharpness_selection_mode(
         cfg.sharpness_selection_mode
     )
-    sharpness_window_weights = _validate_sharpness_window_weights(
-        cfg.sharpness_window_weights
-    )
-    sharpness_gaussian_sigma = _validate_sharpness_gaussian_sigma(
-        cfg.sharpness_gaussian_sigma
-    )
-    find_sharpest_image = bool(cfg.find_sharpest_image)
 
     experiment_dir = os.path.join(cfg.output_dir, cfg.experiment_name)
     out_dir = cfg.output_paths.output_dir
@@ -209,6 +178,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
     out_depth_dir = os.path.join(out_dir, cfg.output_paths.depthmaps_subdir)
     out_mask_dir = os.path.join(out_dir, cfg.output_paths.masks_subdir)
     out_sharpness_dir = os.path.join(out_dir, cfg.output_paths.sharpness_scores_subdir)
+    out_preprocessed_dir = os.path.join(out_dir, cfg.output_paths.preprocessed_images_subdir)
 
     if cfg.scan_dirs is not None:
         scan_dirs = sorted(
@@ -239,39 +209,29 @@ def run_focus_stack(cfg: DictConfig) -> None:
             continue
 
         sharpness_scores = None
-        if find_sharpest_image:
-            if sharpness_selection_mode == "window":
-                (
-                    ref_idx,
-                    sharpness_scores,
-                    selected_indices,
-                    _,
-                ) = find_sharpest_window_reference_index(
-                    image_files,
-                    sharpness_score,
-                    focal_stack_size,
-                    window_weights=sharpness_window_weights,
-                    gaussian_sigma=sharpness_gaussian_sigma,
-                    scan_name=subdir,
-                )
-                selected_image_files, selected_ref_idx = _select_images_by_indices(
-                    image_files, selected_indices, ref_idx
-                )
-            else:
-                ref_idx, sharpness_scores = find_sharpest_image_index(
-                    image_files, sharpness_score, scan_name=subdir
-                )
-                (
-                    selected_image_files,
-                    selected_ref_idx,
-                    selected_indices,
-                ) = _select_focus_stack_images(
-                    image_files, ref_idx, focal_stack_size, scan_name=subdir
-                )
+        if sharpness_selection_mode == "fixed_window":
+            (
+                ref_idx,
+                sharpness_scores,
+                selected_indices,
+                _,
+            ) = find_sharpest_window_reference_index(
+                image_files,
+                sharpness_score,
+                focal_stack_size,
+                scan_name=subdir,
+            )
+            selected_image_files, selected_ref_idx = _select_images_by_indices(
+                image_files, selected_indices, ref_idx
+            )
+        elif sharpness_selection_mode == "gaussian_fit_window":
+            raise NotImplementedError(
+                "gaussian_fit_window selection mode is not yet implemented."
+            )
         else:
-            ref_idx = (
-                len(image_files) // 2
-            )  # picks the middle one TODO: take a look at this later
+            ref_idx, sharpness_scores = find_sharpest_image_index(
+                image_files, sharpness_score, scan_name=subdir
+            )
             (
                 selected_image_files,
                 selected_ref_idx,
@@ -293,13 +253,14 @@ def run_focus_stack(cfg: DictConfig) -> None:
             )
         )
 
-    for path in (out_image_dir, out_depth_dir, out_mask_dir, out_sharpness_dir):
+    for path in (out_image_dir, out_depth_dir, out_mask_dir, out_sharpness_dir, out_preprocessed_dir):
         if os.path.isdir(path):
             shutil.rmtree(path)
     os.makedirs(out_image_dir, exist_ok=True)
     os.makedirs(out_depth_dir, exist_ok=True)
     os.makedirs(out_mask_dir, exist_ok=True)
     os.makedirs(out_sharpness_dir, exist_ok=True)
+    os.makedirs(out_preprocessed_dir, exist_ok=True)
 
     flags = []
     if params.full_resolution_align:
@@ -331,14 +292,41 @@ def run_focus_stack(cfg: DictConfig) -> None:
                 selected_indices=selected_indices,
                 title=(
                     f"{subdir} sharpness scores "
-                    f"({sharpness_score}, {sharpness_selection_mode}, "
-                    f"{sharpness_window_weights})"
+                    f"({sharpness_score}, {sharpness_selection_mode})"
                 ),
             )
 
         output_file = os.path.join(out_image_dir, f"{subdir}.png")
         depth_file = os.path.join(out_depth_dir, f"{subdir}.png")
         mask_file = os.path.join(out_mask_dir, f"{subdir}.png")
+
+        preprocess_median = bool(cfg.get("median_blur_input", False))
+        preprocess_lowpass = bool(cfg.get("low_pass_input", False))
+        if preprocess_median or preprocess_lowpass:
+            scan_preprocess_dir = os.path.join(out_preprocessed_dir, subdir)
+            os.makedirs(scan_preprocess_dir, exist_ok=True)
+            input_files = []
+            for img_path in selected_image_files:
+                img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                if img is not None:
+                    if preprocess_median:
+                        k = int(cfg.get("median_blur_kernel_size", 5))
+                        img = cv2.medianBlur(img, k)
+                    if preprocess_lowpass:
+                        k = int(cfg.get("low_pass_input_kernel_size", 5))
+                        img = cv2.GaussianBlur(img, (k, k), 0)
+                    out_path = os.path.join(scan_preprocess_dir, os.path.basename(img_path))
+                    cv2.imwrite(out_path, img)
+                    input_files.append(out_path)
+                else:
+                    input_files.append(img_path)
+            if preprocess_median:
+                print(f"  Applied median blur (kernel={int(cfg.get('median_blur_kernel_size', 5))}) to {len(input_files)} input images.")
+            if preprocess_lowpass:
+                print(f"  Applied Gaussian blur (kernel={int(cfg.get('low_pass_input_kernel_size', 5))}) to {len(input_files)} input images.")
+        else:
+            input_files = selected_image_files
+
         cmd = (
             ["focus-stack"]
             + flags
@@ -348,7 +336,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
                 f"--depthmap={depth_file}",
                 f"--output={output_file}",
             ]
-            + selected_image_files
+            + input_files
         )
         print(f"Running: {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
