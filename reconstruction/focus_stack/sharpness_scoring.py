@@ -2,6 +2,8 @@ import os
 
 import cv2
 import numpy as np
+from scipy.ndimage import median_filter as scipy_median_filter
+from scipy.optimize import curve_fit
 
 VALID_SHARPNESS_METHODS = ("laplacian", "tenengrad")
 VALID_SHARPNESS_SELECTION_MODES = ("image", "fixed_window", "gaussian_fit_window")
@@ -25,6 +27,51 @@ def _score_tenengrad(gray: np.ndarray) -> float:
     sobel_y = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=5)
     gradient_magnitude_sq = sobel_x**2 + sobel_y**2
     return float(np.mean(gradient_magnitude_sq))
+
+
+def _gaussian(x: np.ndarray, amp: float, mu: float, sigma: float, offset: float) -> np.ndarray:
+    return amp * np.exp(-0.5 * ((x - mu) / sigma) ** 2) + offset
+
+
+def _peak_and_baseline(scores: list[float]) -> tuple[int, float, float]:
+    """Return (peak_idx, peak_value, baseline_value)."""
+    arr = np.array(scores, dtype=float)
+    peak_idx = int(np.argmax(arr))
+    baseline = float(np.percentile(arr, 10))
+    return peak_idx, float(arr[peak_idx]), baseline
+
+
+def _clamp_window(start: int, end: int, n: int, min_f: int, max_f: int) -> tuple[int, int]:
+    """Ensure window respects min/max size and stays in bounds [0, n)."""
+    size = end - start
+    if size < min_f:
+        center = (start + end) // 2
+        half = min_f // 2
+        start = max(0, center - half)
+        end = start + min_f
+        if end > n:
+            end = n
+            start = max(0, end - min_f)
+    if (end - start) > max_f:
+        center = (start + end) // 2
+        half = max_f // 2
+        start = max(0, center - half)
+        end = min(n, start + max_f)
+    return start, end
+
+
+def smooth_scores(scores: list[float], window: int = 3) -> list[float]:
+    """1-D median filter over the score sequence to remove isolated spikes.
+
+    Edge frames are temporarily replaced by their nearest interior neighbour
+    before filtering so a noisy edge frame cannot dominate its own window.
+    """
+    if len(scores) < 2:
+        return list(scores)
+    arr = np.array(scores, dtype=float)
+    arr[0] = arr[1]
+    arr[-1] = arr[-2]
+    return scipy_median_filter(arr, size=window).tolist()
 
 
 def compute_sharpness_scores(image_files: list[str], method: str) -> list[float]:
@@ -59,7 +106,7 @@ def find_sharpest_image_index(
     return sharpest_idx
 
 
-def find_sharpest_window_reference_index(
+def find_sharpest_window_indices(
     scores: list[float],
     window_size: int | None,
     scan_name: str | None = None,
@@ -95,13 +142,55 @@ def find_sharpest_window_reference_index(
     return reference_idx, selected_indices, window_scores.tolist()
 
 
-def find_gaussian_fit_window_reference_index(
+def find_gaussian_fit_window_indices(
     scores: list[float],
+    n_sigma: float = 1.0,
+    min_frames: int = 3,
+    max_frames: int = 20,
     scan_name: str | None = None,
 ) -> tuple[int, list[int], list[float]]:
-    raise NotImplementedError(
-        "gaussian_fit_window selection mode is not yet implemented."
-    )
+    """Fit a Gaussian to the score profile and select ±n_sigma around the mean.
+
+    Returns (reference_idx, selected_indices, fitted_values) where fitted_values
+    is the evaluated Gaussian over all frames (same length as scores).
+    Falls back to find_sharpest_window_indices if the fit fails or produces an
+    implausible result.
+    """
+    arr = np.array(scores, dtype=float)
+    n = len(arr)
+    x = np.arange(n, dtype=float)
+    peak_idx, peak_val, baseline = _peak_and_baseline(scores)
+    prefix = f"{scan_name}: " if scan_name is not None else ""
+
+    try:
+        p0 = [peak_val - baseline, float(peak_idx), n / 6.0, baseline]
+        bounds = ([0, 0, 0.5, 0], [np.inf, n, n, peak_val])
+        popt, _ = curve_fit(_gaussian, x, arr, p0=p0, bounds=bounds, maxfev=2000)
+        _, mu, sigma, _ = popt
+
+        if not (0 <= mu <= n) or sigma <= 0 or sigma > n:
+            raise ValueError("implausible fit")
+
+        start, end = _clamp_window(
+            max(0, int(np.floor(mu - n_sigma * sigma))),
+            min(n, int(np.ceil(mu + n_sigma * sigma))),
+            n, min_frames, max_frames,
+        )
+        selected_indices = list(range(start, end))
+        reference_idx = selected_indices[(end - start) // 2]
+        fitted_values = _gaussian(x, *popt).tolist()
+
+        print(
+            f"{prefix}Gaussian fit: mu={mu:.2f}, sigma={sigma:.2f}, "
+            f"window [{start}, {end}), reference index {reference_idx}."
+        )
+        return reference_idx, selected_indices, fitted_values
+
+    except Exception:
+        print(
+            f"{prefix}Gaussian fit failed, falling back to fixed-window selection."
+        )
+        return find_sharpest_window_indices(scores, max_frames, scan_name=scan_name)
 
 
 def save_sharpness_bar_chart(

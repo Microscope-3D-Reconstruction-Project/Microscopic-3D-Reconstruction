@@ -11,7 +11,9 @@ experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
 
 # ── Reference image selection ────────────────────────────────────────────────
 sharpness_score: tenengrad    # laplacian | tenengrad
-sharpness_selection_mode: fixed_window  # image | fixed_window (uniform sliding window) | gaussian_fit_window (not yet implemented)
+sharpness_selection_mode: gaussian_fit_window  # image | fixed_window (uniform sliding window) | gaussian_fit_window
+median_filter_scores: true          # apply 1-D median filter to sharpness scores before reference selection (removes isolated spikes)
+median_filter_scores_kernel_size: 3  # window size for the score median filter (odd integer)
 
 # ── Output paths ──────────────────────────────────────────────────────────────
 output_paths:

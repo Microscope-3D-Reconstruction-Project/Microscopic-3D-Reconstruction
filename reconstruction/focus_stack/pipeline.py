@@ -13,9 +13,11 @@ from focus_stack.sharpness_scoring import (
     VALID_SHARPNESS_METHODS,
     VALID_SHARPNESS_SELECTION_MODES,
     compute_sharpness_scores,
+    find_gaussian_fit_window_indices,
     find_sharpest_image_index,
-    find_sharpest_window_reference_index,
+    find_sharpest_window_indices,
     save_sharpness_bar_chart,
+    smooth_scores,
 )
 from omegaconf import DictConfig
 
@@ -208,6 +210,8 @@ def run_focus_stack(cfg: DictConfig) -> None:
 
     preprocess_median = bool(cfg.get("median_blur_input", False))
     preprocess_lowpass = bool(cfg.get("low_pass_input", False))
+    smooth_scores_enabled = bool(cfg.get("median_filter_scores", False))
+    smooth_scores_kernel = int(cfg.get("median_filter_scores_kernel_size", 3))
 
     scan_inputs = []
     for subdir in scan_dirs:
@@ -222,7 +226,8 @@ def run_focus_stack(cfg: DictConfig) -> None:
             continue
 
         scores_original = compute_sharpness_scores(image_files, sharpness_score)
-
+        
+        scores_for_selection = None
         if preprocess_median or preprocess_lowpass:
             scan_preprocess_dir = os.path.join(out_preprocessed_dir, subdir)
             os.makedirs(scan_preprocess_dir, exist_ok=True)
@@ -246,20 +251,29 @@ def run_focus_stack(cfg: DictConfig) -> None:
             if preprocess_lowpass:
                 print(f"  Applied Gaussian blur (kernel={int(cfg.get('low_pass_input_kernel_size', 5))}) to {len(input_files)} input images.")
             scores_for_selection = compute_sharpness_scores(input_files, sharpness_score)
+            
         else:
             input_files = image_files
             scores_for_selection = scores_original
 
+        if smooth_scores_enabled:
+            scores_for_selection = smooth_scores(scores_for_selection, window=smooth_scores_kernel)
+        
         if sharpness_selection_mode == "fixed_window":
-            ref_idx, selected_indices, _ = find_sharpest_window_reference_index(
+            ref_idx, selected_indices, _ = find_sharpest_window_indices(
                 scores_for_selection, focal_stack_size, scan_name=subdir
             )
             selected_image_files, selected_ref_idx = _select_images_by_indices(
                 input_files, selected_indices, ref_idx
             )
         elif sharpness_selection_mode == "gaussian_fit_window":
-            raise NotImplementedError(
-                "gaussian_fit_window selection mode is not yet implemented."
+            ref_idx, selected_indices, _ = find_gaussian_fit_window_indices(
+                scores_for_selection,
+                max_frames=focal_stack_size if focal_stack_size is not None else 20,
+                scan_name=subdir,
+            )
+            selected_image_files, selected_ref_idx = _select_images_by_indices(
+                input_files, selected_indices, ref_idx
             )
         else:
             ref_idx = find_sharpest_image_index(scores_for_selection, scan_name=subdir)
@@ -280,7 +294,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
                 f"{subdir} sharpness scores "
                 f"({sharpness_score}, {sharpness_selection_mode})"
             ),
-            scores_preprocessed=scores_for_selection if (preprocess_median or preprocess_lowpass) else None,
+            scores_preprocessed=scores_for_selection if (preprocess_median or preprocess_lowpass or smooth_scores_enabled) else None,
         )
 
         scan_inputs.append(
