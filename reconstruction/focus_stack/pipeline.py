@@ -122,11 +122,13 @@ def _validate_sharpness_score(sharpness_score: str) -> str:
     return sharpness_score
 
 
-def _validate_sharpness_selection_mode(sharpness_selection_mode: str) -> str:
+def _validate_sharpness_selection_mode(sharpness_selection_mode: str | None) -> str | None:
+    if sharpness_selection_mode is None:
+        return None
     if sharpness_selection_mode not in VALID_SHARPNESS_SELECTION_MODES:
         raise ValueError(
             "sharpness_selection_mode must be one of "
-            f"{VALID_SHARPNESS_SELECTION_MODES}, got {sharpness_selection_mode!r}."
+            f"{VALID_SHARPNESS_SELECTION_MODES} or null, got {sharpness_selection_mode!r}."
         )
     return sharpness_selection_mode
 
@@ -259,7 +261,12 @@ def run_focus_stack(cfg: DictConfig) -> None:
         if smooth_scores_enabled:
             scores_for_selection = smooth_scores(scores_for_selection, window=smooth_scores_kernel)
         
-        if sharpness_selection_mode == "fixed_window":
+        if sharpness_selection_mode is None:
+            selected_image_files = input_files
+            selected_ref_idx = len(input_files) // 2
+            ref_idx = selected_ref_idx
+            selected_indices = list(range(len(input_files)))
+        elif sharpness_selection_mode == "fixed_window":
             ref_idx, selected_indices, _ = find_sharpest_window_indices(
                 scores_for_selection, focal_stack_size, scan_name=subdir
             )
@@ -275,7 +282,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
             selected_image_files, selected_ref_idx = _select_images_by_indices(
                 input_files, selected_indices, ref_idx
             )
-        else:
+        elif sharpness_selection_mode == "image":
             ref_idx = find_sharpest_image_index(scores_for_selection, scan_name=subdir)
             (
                 selected_image_files,
@@ -283,6 +290,10 @@ def run_focus_stack(cfg: DictConfig) -> None:
                 selected_indices,
             ) = _select_focus_stack_images(
                 input_files, ref_idx, focal_stack_size, scan_name=subdir
+            )
+        else:
+            raise ValueError(
+                f"Unexpected sharpness_selection_mode: {sharpness_selection_mode!r}"
             )
 
         save_sharpness_bar_chart(
@@ -332,19 +343,23 @@ def run_focus_stack(cfg: DictConfig) -> None:
         depth_file = os.path.join(out_depth_dir, f"{subdir}.png")
         mask_file = os.path.join(out_mask_dir, f"{subdir}.png")
 
-        cmd = (
-            ["focus-stack"]
-            + flags
-            + [
-                f"--reference={selected_ref_idx}",
-                f"--validmask={mask_file}",
-                f"--depthmap={depth_file}",
-                f"--output={output_file}",
-            ]
-            + selected_image_files
-        )
-        print(f"Running: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
+        if len(selected_image_files) == 1:
+            print(f"Skipping focus-stack for {subdir} (single image), copying directly.")
+            shutil.copy2(selected_image_files[0], output_file)
+        else:
+            cmd = (
+                ["focus-stack"]
+                + flags
+                + [
+                    f"--reference={selected_ref_idx}",
+                    f"--validmask={mask_file}",
+                    f"--depthmap={depth_file}",
+                    f"--output={output_file}",
+                ]
+                + selected_image_files
+            )
+            print(f"Running: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
 
         if cfg.get("low_pass_output") and os.path.exists(output_file):
             k = int(cfg.get("low_pass_kernel_size", 5))
