@@ -50,7 +50,7 @@ reconstruction:
     ba_local_max_num_iterations: 30
     ba_local_max_refinements: 3
     ba_global_max_num_iterations: 75
-    ba_use_gpu: true
+    ba_use_gpu: false
     num_threads: 1
 
 # ── Hydra internal settings ───────────────────────────────────────────────────
