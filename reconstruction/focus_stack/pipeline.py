@@ -214,6 +214,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
     preprocess_lowpass = bool(cfg.get("low_pass_input", False))
     smooth_scores_enabled = bool(cfg.get("median_filter_scores", False))
     smooth_scores_kernel = int(cfg.get("median_filter_scores_kernel_size", 3))
+    gaussian_fit_n_sigma = float(params.get("gaussian_fit_n_sigma", 1.0))
 
     scan_inputs = []
     for subdir in scan_dirs:
@@ -276,6 +277,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
         elif sharpness_selection_mode == "gaussian_fit_window":
             ref_idx, selected_indices, _ = find_gaussian_fit_window_indices(
                 scores_for_selection,
+                n_sigma=gaussian_fit_n_sigma,
                 max_frames=focal_stack_size if focal_stack_size is not None else 20,
                 scan_name=subdir,
             )
