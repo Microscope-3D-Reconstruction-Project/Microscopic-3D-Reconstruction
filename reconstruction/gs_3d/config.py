@@ -25,6 +25,9 @@ class Config:
     images_dir: str = "outputs/images"
     masks_dir: Optional[str] = None
     valid_region_masks_dir: Optional[str] = None
+    # optional ground-truth images (from focus_stack.gt_data_dir); used for
+    # eval metrics instead of images_dir when the directory exists
+    gt_images_dir: Optional[str] = None
     splat_dir: str = "outputs/gsplat"
     data_factor: int = 4
     test_every: int = 8

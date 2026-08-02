@@ -20,6 +20,7 @@ import torch.nn.functional as F
 import tqdm
 import viser
 import yaml
+import torchvision
 
 from datasets.colmap import Dataset, Parser
 from fused_ssim import fused_ssim
@@ -144,7 +145,22 @@ class Runner:
             patch_size=cfg.patch_size,
             load_depths=cfg.depth_loss,
         )
-        self.valset = Dataset(self.parser, split="val")
+
+        # If ground-truth images are available, evaluate metrics against them
+        # instead of the (blurred/focus-stacked) training images.
+        eval_parser = self.parser
+        if cfg.gt_images_dir is not None and os.path.isdir(cfg.gt_images_dir):
+            print(f"Evaluating against ground-truth images in {cfg.gt_images_dir!r}.")
+            eval_parser = Parser(
+                colmap_dir=cfg.model_dir,
+                images_dir=cfg.gt_images_dir,
+                masks_dir=cfg.masks_dir,
+                valid_region_masks_dir=cfg.valid_region_masks_dir,
+                factor=cfg.data_factor,
+                normalize=cfg.normalize_world_space,
+                test_every=cfg.test_every,
+            )
+        self.valset = Dataset(eval_parser, split="val")
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         print("Scene scale:", self.scene_scale)
 

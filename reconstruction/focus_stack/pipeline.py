@@ -168,8 +168,21 @@ def _select_images_by_indices(
     )
 
 
+def _copy_gt_reference_image(
+    gt_data_dir: str, subdir: str, image_files: list, ref_idx: int, out_gt_dir: str
+) -> None:
+    """Copy the ground-truth image matching the reference frame into out_gt_dir."""
+    ref_filename = os.path.basename(image_files[ref_idx])
+    gt_image_path = os.path.join(gt_data_dir, subdir, ref_filename)
+    if not os.path.exists(gt_image_path):
+        print(f"Warning: ground-truth image not found at {gt_image_path}, skipping.")
+        return
+    shutil.copy2(gt_image_path, os.path.join(out_gt_dir, f"{subdir}.png"))
+
+
 def run_focus_stack(cfg: DictConfig) -> None:
     dataset_dir = cfg.dataset_dir
+    gt_data_dir = cfg.get("gt_data_dir", None)
     params = cfg.focus_stack_params
     focal_stack_size = _validate_focal_stack_size(params.focal_stack_size)
     sharpness_score = _validate_sharpness_score(cfg.sharpness_score)
@@ -184,6 +197,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
     out_mask_dir = os.path.join(out_dir, cfg.output_paths.masks_subdir)
     out_sharpness_dir = os.path.join(out_dir, cfg.output_paths.sharpness_scores_subdir)
     out_preprocessed_dir = os.path.join(out_dir, cfg.output_paths.preprocessed_images_subdir)
+    out_gt_dir = os.path.join(out_dir, cfg.output_paths.gt_images_subdir)
 
     if cfg.scan_dirs is not None:
         scan_dirs = sorted(
@@ -209,6 +223,10 @@ def run_focus_stack(cfg: DictConfig) -> None:
     os.makedirs(out_mask_dir, exist_ok=True)
     os.makedirs(out_sharpness_dir, exist_ok=True)
     os.makedirs(out_preprocessed_dir, exist_ok=True)
+    if gt_data_dir is not None:
+        if os.path.isdir(out_gt_dir):
+            shutil.rmtree(out_gt_dir)
+        os.makedirs(out_gt_dir, exist_ok=True)
 
     preprocess_median = bool(cfg.get("median_blur_input", False))
     preprocess_lowpass = bool(cfg.get("low_pass_input", False))
@@ -373,6 +391,9 @@ def run_focus_stack(cfg: DictConfig) -> None:
 
         pose_matrix = _load_pose_for_scan(subdir_path, image_files, ref_idx)
         poses[f"{subdir}.png"] = pose_matrix.tolist()
+
+        if gt_data_dir is not None:
+            _copy_gt_reference_image(gt_data_dir, subdir, image_files, ref_idx, out_gt_dir)
 
     poses_path = os.path.join(experiment_dir, cfg.output_paths.poses_filename)
     os.makedirs(experiment_dir, exist_ok=True)

@@ -13,6 +13,7 @@ random_seed: 0
 
 # ── Dataset ──────────────────────────────────────────────────────────────────
 dataset_dir: ???              # required: directory containing scan subdirs
+gt_data_dir: null              # optional: mirrors dataset_dir's scan subdirs/filenames with ground-truth images
 
 # ── Stage toggles ─────────────────────────────────────────────────────────────
 run:
@@ -24,6 +25,7 @@ run:
 # ── Wire experiment dir into focus_stack ─────────────────────────────────────
 focus_stack:
   dataset_dir: ${dataset_dir}
+  gt_data_dir: ${gt_data_dir}
   output_dir: ${output_dir}
   experiment_name: ${experiment_name}
   random_seed: ${random_seed} # focus stacking should already be deterministic but keeping as a placeholder just in case additional changes are made
