@@ -11,6 +11,8 @@ class Sam2MaskingConfig:
     output_dir: str
     random_seed: int = 0
     masks_subdir: str = "masks"
+    gt_images_dir: Optional[str] = None  # optional; masked GT images written only if this dir exists
+    masked_gt_images_subdir: str = "masked_gt_images"
 
     bootstrap_stem: str = "scan00"
     focus_mask_border_padding: int = 8
@@ -46,6 +48,8 @@ def build_config(cfg_raw: DictConfig) -> Sam2MaskingConfig:
         output_dir=output_paths["output_dir"],
         random_seed=cfg["random_seed"],
         masks_subdir=output_paths["masks_subdir"],
+        gt_images_dir=input_paths.get("gt_images_dir"),
+        masked_gt_images_subdir=output_paths.get("masked_gt_images_subdir", "masked_gt_images"),
         bootstrap_stem=bootstrap["bootstrap_stem"],
         focus_mask_border_padding=bootstrap["focus_mask_border_padding"],
         edge_blur_kernel_size=bootstrap["edge_blur_kernel_size"],

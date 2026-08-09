@@ -29,12 +29,46 @@ class Sam2MaskingPipeline:
 
     def run(self):
         args = self.cfg
-
         os.makedirs(args.output_dir, exist_ok=True)
-        masks_dir = os.path.join(args.output_dir, args.masks_subdir)
-        masked_images_dir = os.path.join(args.output_dir, "masked_images")
-        overlay_images_dir = os.path.join(args.output_dir, "overlay_images")
-        bootstrap_debug_dir = os.path.join(args.output_dir, "bootstrap_debug")
+
+        self._run_pass(
+            images_dir=args.images_dir,
+            masks_dir_name=args.masks_subdir,
+            masked_images_dir_name="masked_images",
+            overlay_images_dir_name="overlay_images",
+            bootstrap_debug_dir_name="bootstrap_debug",
+        )
+
+        gt_images_dir = args.gt_images_dir
+        if gt_images_dir is None:
+            return
+        if not os.path.isdir(gt_images_dir):
+            print(f"Warning: gt_images_dir={gt_images_dir!r} does not exist; skipping GT masking.")
+            return
+
+        print(f"Ground-truth images dir found at {gt_images_dir!r}; masking GT images too.")
+        self._run_pass(
+            images_dir=gt_images_dir,
+            masks_dir_name="gt_masks",
+            masked_images_dir_name=args.masked_gt_images_subdir,
+            overlay_images_dir_name="gt_overlay_images",
+            bootstrap_debug_dir_name="gt_bootstrap_debug",
+        )
+
+    def _run_pass(
+        self,
+        images_dir: str,
+        masks_dir_name: str,
+        masked_images_dir_name: str,
+        overlay_images_dir_name: str,
+        bootstrap_debug_dir_name: str,
+    ):
+        args = self.cfg
+
+        masks_dir = os.path.join(args.output_dir, masks_dir_name)
+        masked_images_dir = os.path.join(args.output_dir, masked_images_dir_name)
+        overlay_images_dir = os.path.join(args.output_dir, overlay_images_dir_name)
+        bootstrap_debug_dir = os.path.join(args.output_dir, bootstrap_debug_dir_name)
         points_debug_dir = os.path.join(bootstrap_debug_dir, "point_images")
         firstpass_masks_dir = os.path.join(bootstrap_debug_dir, "firstpass_masks")
         firstpass_masked_dir = os.path.join(bootstrap_debug_dir, "firstpass_masked_images")
@@ -69,13 +103,13 @@ class Sam2MaskingPipeline:
             os.makedirs(d, exist_ok=True)
 
         # Step 1: Load images and find bootstrap (scan00)
-        image_paths = list_input_images(args.images_dir)
+        image_paths = list_input_images(images_dir)
         if not image_paths:
-            raise FileNotFoundError(f"No image files found in {args.images_dir!r}.")
+            raise FileNotFoundError(f"No image files found in {images_dir!r}.")
 
         bootstrap_path = find_bootstrap_image(image_paths, args.bootstrap_stem)
         if bootstrap_path is None:
-            raise FileNotFoundError(f"No bootstrap image found in {args.images_dir!r}.")
+            raise FileNotFoundError(f"No bootstrap image found in {images_dir!r}.")
         bootstrap_frame_idx = image_paths.index(bootstrap_path)
         bootstrap_base_name = os.path.splitext(os.path.basename(bootstrap_path))[0]
 
@@ -247,4 +281,4 @@ class Sam2MaskingPipeline:
                 overlay_alpha=args.overlay_alpha,
             )
 
-        print(f"Masking complete. Masks saved to: {masks_dir}")
+        print(f"Masking complete for {images_dir!r}. Masks saved to: {masks_dir}")

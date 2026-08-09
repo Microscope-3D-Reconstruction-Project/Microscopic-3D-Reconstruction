@@ -7,10 +7,12 @@ random_seed: 0
 input_paths:
   images_dir: ${...output_dir}/${...experiment_name}/focus_stack/focus_stacked_images
   valid_regions_dir: ${...output_dir}/${...experiment_name}/focus_stack/focus_stacked_masks
+  gt_images_dir: ${...output_dir}/${...experiment_name}/focus_stack/gt_images  # optional; masked only if this dir exists (focus_stack.gt_data_dir was set)
 
 output_paths:
   output_dir: ${..output_dir}/${..experiment_name}/masking
   masks_subdir: masks
+  masked_gt_images_subdir: masked_gt_images
 
 # Canny edge + point-prompt bootstrap
 bootstrap:
