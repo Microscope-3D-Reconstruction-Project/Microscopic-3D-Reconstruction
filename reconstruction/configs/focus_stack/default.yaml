@@ -30,8 +30,8 @@ output_paths:
 
 # ── focus-stack CLI params ────────────────────────────────────────────────────
 focus_stack_params:
-  focal_stack_size: 7       # odd number of images centered on the reference frame; null = use all images
-  gaussian_fit_n_sigma: 1.0  # window half-width in std devs for gaussian_fit_window selection mode (smaller = tighter)
+  focal_stack_size: 7       # odd number of images centered on the reference frame; null = use all images (reference still chosen per sharpness_selection_mode, e.g. gaussian_fit_window peak)
+  gaussian_fit_n_sigma: 1.0  # window half-width in std devs for gaussian_fit_window selection mode (smaller = tighter); ignored when focal_stack_size is null
   full_resolution_align: true
   global_align: true
   align_keep_size: true

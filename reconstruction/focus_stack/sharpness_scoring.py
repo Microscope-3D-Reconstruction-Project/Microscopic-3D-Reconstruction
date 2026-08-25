@@ -148,6 +148,7 @@ def find_gaussian_fit_window_indices(
     min_frames: int = 3,
     max_frames: int = 20,
     scan_name: str | None = None,
+    full_stack: bool = False,
 ) -> tuple[int, list[int], list[float]]:
     """Fit a Gaussian to the score profile and select ±n_sigma around the mean.
 
@@ -155,6 +156,13 @@ def find_gaussian_fit_window_indices(
     is the evaluated Gaussian over all frames (same length as scores).
     Falls back to find_sharpest_window_indices if the fit fails or produces an
     implausible result.
+
+    The reference frame is always derived from the same clamped ±n_sigma
+    window around the fitted mean, regardless of full_stack. If full_stack is
+    True, selected_indices spans the entire stack instead of being clamped to
+    that window (used when focal_stack_size is null, i.e. focus-stack the
+    whole scan using the Gaussian-fit reference) -- the window is only used to
+    pick the reference frame in that case.
     """
     arr = np.array(scores, dtype=float)
     n = len(arr)
@@ -171,22 +179,38 @@ def find_gaussian_fit_window_indices(
         if not (0 <= mu <= n) or sigma <= 0 or sigma > n:
             raise ValueError("implausible fit")
 
+        fitted_values = _gaussian(x, *popt).tolist()
+
         start, end = _clamp_window(
             max(0, int(np.floor(mu - n_sigma * sigma))),
             min(n, int(np.ceil(mu + n_sigma * sigma))),
             n, min_frames, max_frames,
         )
-        selected_indices = list(range(start, end))
-        reference_idx = selected_indices[(end - start) // 2]
-        fitted_values = _gaussian(x, *popt).tolist()
+        window_indices = list(range(start, end))
+        reference_idx = window_indices[(end - start) // 2]
+
+        if full_stack:
+            selected_indices = list(range(n))
+            print(
+                f"{prefix}Gaussian fit: mu={mu:.2f}, sigma={sigma:.2f}, "
+                f"using entire stack ({n} frames), reference index {reference_idx} "
+                f"(from window [{start}, {end}))."
+            )
+            return reference_idx, selected_indices, fitted_values
 
         print(
             f"{prefix}Gaussian fit: mu={mu:.2f}, sigma={sigma:.2f}, "
             f"window [{start}, {end}), reference index {reference_idx}."
         )
-        return reference_idx, selected_indices, fitted_values
+        return reference_idx, window_indices, fitted_values
 
     except Exception:
+        if full_stack:
+            print(
+                f"{prefix}Gaussian fit failed, falling back to sharpest image "
+                "as reference over the entire stack."
+            )
+            return peak_idx, list(range(n)), list(arr)
         print(
             f"{prefix}Gaussian fit failed, falling back to fixed-window selection."
         )

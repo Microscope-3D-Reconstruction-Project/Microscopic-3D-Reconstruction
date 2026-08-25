@@ -298,6 +298,7 @@ def run_focus_stack(cfg: DictConfig) -> None:
                 n_sigma=gaussian_fit_n_sigma,
                 max_frames=focal_stack_size if focal_stack_size is not None else 20,
                 scan_name=subdir,
+                full_stack=focal_stack_size is None,
             )
             selected_image_files, selected_ref_idx = _select_images_by_indices(
                 input_files, selected_indices, ref_idx
