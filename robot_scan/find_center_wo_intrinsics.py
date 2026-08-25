@@ -1,28 +1,22 @@
 """
-demos/scan_object.py
+robot_scan/find_center_wo_intrinsics.py
 
-Scans an object from hemisphere viewpoints. Two differences from
-scan_object_and_save_frames.py:
+Moves the robot to 5 predefined hemisphere viewpoints. At each viewpoint the
+user jogs the robot (camera frame) until the object appears centred on the
+crosshair, then presses "Move to Next" to record the optical-axis ray from the
+current camera pose. After all 5 viewpoints, the rays are intersected via
+least-squares to estimate the 3D object centre.
 
-1. IK for every waypoint is pre-computed upfront and stored as numpy arrays
-   (valid configs + failed indices), like find_valid_waypoints.py.
-
-2. When the hemisphere path is unsafe, RRT*-Connect is used as fallback
-   instead of kinematic trajectory optimization. If RRT* also fails, the
-   program quits. Preview buttons let you inspect the raw / smoothed RRT*
-   path before committing to execution.
+The crosshair is drawn at (cx, cy) from the calibrated intrinsics, so the
+user knows exactly where to aim. Assuming the user centres the object there,
+the object lies on the optical axis ray — no pixel click needed.
 
 Usage:
-    python demos/scan_object.py
-    python demos/scan_object.py --use_hardware
-    python demos/scan_object.py --no_cam
-    python demos/scan_object.py --skip_opt
+    python robot_scan/find_center_wo_intrinsics.py --use_hardware
 """
 
 import argparse
-import queue
 import threading
-import time
 
 from datetime import datetime
 from enum import Enum, auto
@@ -40,8 +34,6 @@ from demo_config import (
     ELBOW_ANGLE,
     HEMISPHERE_CENTER,
     HEMISPHERE_RADIUS,
-    NUM_PICTURES,
-    NUM_SCAN_POINTS,
     R_AXIS,
     T_CAM_TO_TIP,
     V_AXIS,
@@ -57,6 +49,8 @@ from pydrake.all import (
     DiagramBuilder,
     MeshcatVisualizer,
     Rgba,
+    RigidTransform,
+    RotationMatrix,
     Simulator,
 )
 from pydrake.lcm import DrakeLcm
@@ -65,17 +59,22 @@ from termcolor import colored
 
 from iiwa_setup.iiwa import IiwaHardwareStationDiagram
 from iiwa_setup.util.visualizations import draw_triad
+from utils.centering_waypoints import generate_centering_waypoints
+from utils.jog import try_jog_tip
 from utils.kuka_geo_kin import KinematicsSolver
 from utils.planning import (
     compute_hemisphere_traj_async,
-    compute_optical_axis_traj_async,
-    correct_waypoints_for_principal_point,
-    generate_hemisphere_waypoints,
     move_along_trajectory,
     plot_trajectory_in_meshcat,
 )
-from utils.plotting import plot_hemisphere_ik_results, plot_hemisphere_waypoints
-from utils.ray_reconstruction import load_intrinsics
+from utils.plotting import plot_hemisphere_waypoints
+from utils.ray_reconstruction import (
+    least_squares_ray_intersection,
+    load_intrinsics,
+    print_ray,
+    visualize_predicted_center,
+    visualize_ray,
+)
 from utils.RRT import plot_rrt_raw_path_in_meshcat
 from utils.RRTStar import plan_rrt_star_async
 from utils.safety import filter_ik_solutions
@@ -92,20 +91,20 @@ class State(Enum):
     MOVING_TO_START = auto()
     WAITING_FOR_NEXT_SCAN = auto()
     COMPUTING_IKS = auto()
+    AWAITING_HEMISPHERE_CONFIRM = auto()
     MOVING_ALONG_HEMISPHERE = auto()
     PLANNING_RRT_FALLBACK = auto()
     COMPUTING_RRT_FALLBACK = auto()
-    AWAITING_HEMISPHERE_CONFIRM = auto()
     AWAITING_RRT_CONFIRM = auto()
     MOVING_ALONG_RRT = auto()
-    WAITING_BEFORE_OPTICAL = auto()
-    MOVING_DOWN_OPTICAL_AXIS = auto()
+    REVERTING_TO_SCAN_POSE = auto()
+    AWAITING_JOG_CONFIRM = auto()
+    COMPUTING_RESET = auto()
+    RESETTING = auto()
     DONE = auto()
 
 
-def _animate_configs(
-    configs, station, station_context, simulator, meshcat
-):  # TODO: This is super dangerous in hardware, would actually move the robot!!!
+def _animate_configs(configs, station, station_context, simulator, meshcat):
     """Animate robot through configs forward then in reverse (for previewing)."""
     for q in list(configs) + list(reversed(configs)):
         station.GetInputPort("iiwa.position").FixValue(station_context, q)
@@ -117,17 +116,52 @@ def _animate_configs(
 def main(
     use_hardware: bool,
     no_cam: bool = False,
-    skip_opt: bool = False,
     start_idx: int = 0,
+    live_view: bool = True,
+    camera_source: int = CAMERA_SOURCE,
     wait: bool = False,
-    num_scan_points: int = NUM_SCAN_POINTS,
-    use_hemisphere: bool = False,
+    only_rrt: bool = False,
 ) -> None:
     cfg = get_config(use_hardware)
     speed_factor = cfg["speed_factor"]
     max_joint_velocities = cfg["max_joint_velocities"]
     vel_limits = cfg["vel_limits"]
     acc_limits = cfg["acc_limits"]
+
+    elbow_angle = ELBOW_ANGLE
+    default_position = DEFAULT_POSITION
+    r = R_AXIS
+    v = V_AXIS
+    T_cam_to_tip = T_CAM_TO_TIP
+
+    # Load intrinsics for crosshair position
+    camera_K = load_intrinsics()
+    cx_full = int(camera_K[0, 2])
+    cy_full = int(camera_K[1, 2])
+    cx_disp = cx_full // 2
+    cy_disp = cy_full // 2
+
+    print(colored("=" * 60, "cyan"))
+    print(colored("  find_center_wo_intrinsics — configuration", "cyan"))
+    print(colored("=" * 60, "cyan"))
+    print(colored("  Args:", "white"))
+    print(f"    use_hardware  : {use_hardware}")
+    print(f"    no_cam        : {no_cam}")
+    print(f"    start_idx     : {start_idx}")
+    print(f"    live_view     : {live_view}")
+    print(f"    camera_source : {camera_source}")
+    print(f"    only_rrt      : {only_rrt}")
+    print(colored("  Hemisphere:", "white"))
+    print(f"    center  : {HEMISPHERE_CENTER}")
+    print(f"    radius  : {HEMISPHERE_RADIUS}")
+    print(colored("  Intrinsics (crosshair):", "white"))
+    print(f"    cx = {cx_full}  cy = {cy_full}  →  display ({cx_disp}, {cy_disp})")
+    print(colored("  Config:", "white"))
+    print(f"    speed_factor         : {speed_factor}")
+    print(f"    max_joint_vel (deg/s): {np.rad2deg(max_joint_velocities).round(2)}")
+    print(f"    vel_limits  (rad/s)  : {vel_limits.round(3)}")
+    print(f"    acc_limits  (rad/s²) : {acc_limits.round(3)}")
+    print(colored("=" * 60, "cyan"))
 
     scenario_data = """
     directives:
@@ -149,98 +183,50 @@ def main(
     # ==================================================================
     # Parameters
     # ==================================================================
-
     hemisphere_pos = np.asarray(HEMISPHERE_CENTER, dtype=float)
     hemisphere_radius = HEMISPHERE_RADIUS
-    hemisphere_axis = np.array([-1.0, 0.0, 0.0])
-
-    coverage = 1.0
-    distance_along_optical_axis = 0.04
-    num_pictures = NUM_PICTURES
-
-    elbow_angle = ELBOW_ANGLE
-    default_position = DEFAULT_POSITION
-    r = R_AXIS
-    v = V_AXIS
-    T_cam_to_tip = T_CAM_TO_TIP
-
-    # Load intrinsics for crosshair overlay
-    camera_K = load_intrinsics()
-    cx_full = int(camera_K[0, 2])
-    cy_full = int(camera_K[1, 2])
-    cx_disp = cx_full // 2
-    cy_disp = cy_full // 2
-
-    print(colored("=" * 60, "cyan"))
-    print(colored("  scan_object — configuration", "cyan"))
-    print(colored("=" * 60, "cyan"))
-    print(colored("  Args:", "white"))
-    print(f"    use_hardware     : {use_hardware}")
-    print(f"    no_cam           : {no_cam}")
-    print(f"    skip_opt         : {skip_opt}")
-    print(f"    start_idx        : {start_idx}")
-    print(f"    wait             : {wait}")
-    print(f"    use_hemisphere   : {use_hemisphere}")
-    print(f"    num_scan_points  : {num_scan_points}")
-    print(colored("  Hemisphere:", "white"))
-    print(f"    center  : {hemisphere_pos}")
-    print(f"    radius  : {hemisphere_radius}")
-    print(f"    axis    : {hemisphere_axis}")
-    print(colored("  Intrinsics (crosshair):", "white"))
-    print(f"    cx = {cx_full}  cy = {cy_full}  →  display ({cx_disp}, {cy_disp})")
-    print(colored("  Config:", "white"))
-    print(f"    speed_factor         : {speed_factor}")
-    print(f"    max_joint_vel (deg/s): {np.rad2deg(max_joint_velocities).round(2)}")
-    print(f"    vel_limits  (rad/s)  : {vel_limits.round(3)}")
-    print(f"    acc_limits  (rad/s²) : {acc_limits.round(3)}")
-    print(colored("=" * 60, "cyan"))
+    hemisphere_axis = np.array([-1.0, 0.0, 0.0])  # angle=0 always
 
     # ==================================================================
     # Outputs setup
     # ==================================================================
     outputs_dir = Path(__file__).parent.parent / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
-    date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    scans_base = Path(__file__).parent.parent / "microscope-data" / "scans" / date_str
-    scans_base.mkdir(parents=True, exist_ok=True)
-
-    # Write scan parameters to the session folder
-    params_text = f"""\
-date: {date_str}
-hemisphere_pos: {hemisphere_pos.tolist()}
-hemisphere_radius: {hemisphere_radius}
-num_scan_points: {num_scan_points}
-coverage: {coverage}
-distance_along_optical_axis: {distance_along_optical_axis}
-num_pictures: {num_pictures}
-elbow_angle_deg: {np.rad2deg(elbow_angle):.2f}
-use_hardware: {use_hardware}
-skip_opt: {skip_opt}
-wait: {wait}
-start_idx: {start_idx}
-"""
-    (scans_base / "scan_params.txt").write_text(params_text)
-    print(colored(f"✓ Scan params saved to {scans_base / 'scan_params.txt'}", "cyan"))
+    centering_dir = (
+        Path(__file__).parent.parent / "microscope-data" / "object_centering"
+    )
+    centering_dir.mkdir(parents=True, exist_ok=True)
+    center_path = centering_dir / "center.npy"
+    print(
+        colored(
+            f"✓ Center will be saved → {center_path} (overwrites on each run)", "cyan"
+        )
+    )
 
     # ==================================================================
-    # Waypoint generation
+    # Waypoint generation (5 fixed centering poses)
     # ==================================================================
-    hemisphere_waypoints = generate_hemisphere_waypoints(
+    hemisphere_waypoints = generate_centering_waypoints(
         hemisphere_pos,
         hemisphere_radius,
         hemisphere_axis,
-        num_scan_points=num_scan_points,
-        coverage=coverage,
     )
-    hemisphere_waypoints = correct_waypoints_for_principal_point(
-        hemisphere_waypoints, camera_K, image_width=1920, image_height=1080
-    )
+    labels = ["straight", "up", "down", "right", "left"]
+    # print(colored("\n5 centering waypoints:", "cyan"))
+    # for i, (wp, label) in enumerate(zip(hemisphere_waypoints, labels)):
+    #     # print(f"  [{i}] {label}: {np.round(wp.rotation().matrix(), 4)}, {np.round(wp.translation(), 4)}")
+    #     print(f"  [{i}] {label}:")
+    #     print("Rotation: ")
+    #     print(np.round(wp.rotation().matrix(), 4))
+    #     print("Translation: ")
+    #     print(np.round(wp.translation(), 4))
+
     plot_hemisphere_waypoints(
         hemisphere_waypoints,
         hemisphere_pos,
         hemisphere_radius,
         hemisphere_axis,
-        output_path=outputs_dir / "hemisphere_waypoints.png",
+        output_path=outputs_dir / "centering_waypoints.png",
         visualize=True,
     )
 
@@ -260,11 +246,7 @@ start_idx: {start_idx}
         while _q_hardware[0] is None:
             _lc.HandleSubscriptions(100)
         initial_q = _q_hardware[0]
-        print(
-            colored(
-                f"✓ Hardware position: {np.rad2deg(initial_q).round(1)} deg", "cyan"
-            )
-        )
+
     else:
         initial_q = default_position
 
@@ -305,11 +287,23 @@ start_idx: {start_idx}
         plant=station.get_internal_plant(),
         frame=camera_frame,
         length=0.1,
-        radius=0.002,
-        opacity=0.1,
+        radius=0.001,
         name="camera_link",
+        opacity=0.1,
     )
 
+    # flange_frame = station.get_internal_plant().GetFrameByName("iiwa_link_ee_kuka")
+    # AddFrameTriadIllustration(
+    #     scene_graph=station.internal_station.get_scene_graph(),
+    #     plant=station.get_internal_plant(),
+    #     frame=flange_frame,
+    #     length=0.1,
+    #     radius=0.002,
+    #     name="camera_link",
+    # )
+
+    # Calibrated optical center frame — auto-updates with robot motion in Meshcat
+    # because optical_center is a model link welded to the flange via the DMD.
     optical_center_frame = station.get_internal_plant().GetFrameByName("optical_center")
     AddFrameTriadIllustration(
         scene_graph=station.internal_station.get_scene_graph(),
@@ -327,17 +321,15 @@ start_idx: {start_idx}
     simulator.Initialize()
 
     meshcat = station.internal_meshcat
-    meshcat.SetProperty("/Grid", "visible", False)
-    meshcat.SetProperty("/Axes", "visible", False)
 
     # ==================================================================
     # Buttons + sliders
     # ==================================================================
     meshcat.AddButton("Stop Simulation")
-    meshcat.AddButton("Move to Scan")
+    meshcat.AddButton("Move to Next")
     meshcat.AddButton("Preview RRT* Raw")
     meshcat.AddButton("Preview RRT* Smooth")
-    meshcat.AddButton("Execute Path")
+    meshcat.AddButton("Reset")
 
     joint_lower_limits = station.get_internal_plant().GetPositionLowerLimits()
     joint_upper_limits = station.get_internal_plant().GetPositionUpperLimits()
@@ -351,13 +343,37 @@ start_idx: {start_idx}
         )
     meshcat.AddSlider("Current PSI (deg)", -180, 180, 0.1, 0)
 
+    for i, wp in enumerate(hemisphere_waypoints):
+        draw_triad(
+            meshcat,
+            f"hemisphere_waypoint_{i}",
+            wp,
+            length=0.02,
+            radius=0.001,
+            opacity=0.5,
+        )
+
     # ==================================================================
-    # Pre-compute IK for all waypoints (like find_valid_waypoints.py)
+    # Pre-compute IK for all 5 waypoints
     # ==================================================================
     n = len(hemisphere_waypoints)
-    q_array = np.full((n, 7), np.nan)  # valid rows filled in; failed stay NaN
+    q_array = np.full((n, 7), np.nan)
     failed_indices = []
     q_prev = default_position.copy()
+
+    # # TEMP DEBUG: dump the offsets the solver computed
+    # print(
+    #     colored(
+    #         f"\n[DEBUG] R_7M used by IK:\n{np.round(kinematics_solver.R_7M, 4)}",
+    #         "magenta",
+    #     )
+    # )
+    # print(
+    #     colored(
+    #         f"[DEBUG] p_7M_in_7 used by IK: {np.round(kinematics_solver.p_7M_in_7, 4)}",
+    #         "magenta",
+    #     )
+    # )
 
     print(colored(f"\nPre-computing IK for {n} waypoints...", "cyan"))
     for i, wp in enumerate(hemisphere_waypoints):
@@ -365,6 +381,7 @@ start_idx: {start_idx}
         target_pos = wp.translation()
 
         Q = kinematics_solver.IK_for_microscope(target_rot, target_pos, psi=elbow_angle)
+        n_raw = Q.shape[0] if hasattr(Q, "shape") else len(Q)
         Q = filter_ik_solutions(
             station,
             Q,
@@ -375,59 +392,35 @@ start_idx: {start_idx}
             tip_frame_name="optical_center",
         )
 
+        n_filt = Q.shape[0] if hasattr(Q, "shape") else len(Q)
+
         if Q.shape[0] == 0:
-            print(colored(f"  [{i}] FAIL: no valid IK solutions", "yellow"))
+            label = labels[i] if i < len(labels) else str(i)
+            print(colored(f"  [{i}] ❌ FAIL ({label}): no valid IK solutions", "red"))
             failed_indices.append(i)
             continue
 
         q_des = kinematics_solver.find_closest_solution(Q, q_prev)
         q_array[i] = q_des
         q_prev = q_des
-        print(f"  [{i}] OK: {np.rad2deg(q_des).round(2)} deg")
+        label = labels[i] if i < len(labels) else str(i)
+        print(colored(f"  [{i}] ✓ {label}", "green"))
 
     n_valid = int(np.sum(~np.isnan(q_array).any(axis=1)))
-    print(
-        colored(
-            f"\nPre-computation done: {n_valid}/{n} valid, {len(failed_indices)} failed.",
-            "cyan",
-        )
-    )
     if failed_indices:
-        print(colored(f"  Failed indices: {failed_indices}", "yellow"))
-
-    # Persist to disk
-    np.savetxt(outputs_dir / "hemisphere_q_solutions.csv", q_array, delimiter=",")
-    np.save(outputs_dir / "hemisphere_q_solutions.npy", q_array)
-    np.save(outputs_dir / "hemisphere_q_failed_indices.npy", np.array(failed_indices))
-
-    # Save waypoint positions and rotations
-    wp_positions = np.array([wp.translation() for wp in hemisphere_waypoints])
-    wp_rotations = np.array([wp.rotation().matrix() for wp in hemisphere_waypoints])
-    np.save(outputs_dir / "hemisphere_waypoints_positions.npy", wp_positions)
-    np.save(outputs_dir / "hemisphere_waypoints_rotations.npy", wp_rotations)
-    print(colored(f"  Saved IK arrays and waypoints to {outputs_dir}", "cyan"))
-
-    # Plot success / failed waypoints separately
-    plot_hemisphere_ik_results(
-        hemisphere_waypoints,
-        failed_indices,
-        hemisphere_pos,
-        hemisphere_radius,
-        outputs_dir,
-    )
-
-    # Draw only reachable waypoints in Meshcat
-    failed_set = set(failed_indices)
-    for i, wp in enumerate(hemisphere_waypoints):
-        if i not in failed_set:
-            draw_triad(
-                meshcat,
-                f"hemisphere_waypoint_{i}",
-                wp,
-                length=0.02,
-                radius=0.001,
-                opacity=0.1,
+        failed_labels = [
+            labels[i] if i < len(labels) else str(i) for i in failed_indices
+        ]
+        print(
+            colored(
+                f"\n❌ Only {n_valid}/{n} viewpoints reachable. Failed: {failed_labels}. Quitting.",
+                "red",
             )
+        )
+        return
+    print(colored(f"\n✓ All {n_valid}/{n} viewpoints reachable.", "green"))
+
+    np.savetxt(outputs_dir / "hemisphere_q_solutions.csv", q_array, delimiter=",")
 
     # ==================================================================
     # Camera setup
@@ -436,26 +429,23 @@ start_idx: {start_idx}
     _latest_frame = None
     _latest_frame_lock = None
     _capture_stop = None
-    _frame_queue = None
     _capture_thread = None
-    _writer_thread = None
 
     if not no_cam:
-        camera = cv2.VideoCapture(CAMERA_SOURCE)
+        camera = cv2.VideoCapture(camera_source)
         camera.set(cv2.CAP_PROP_FPS, 30)
         camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
         camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
         if not camera.isOpened():
             print(
                 colored(
-                    f"⚠ Could not open camera device {CAMERA_SOURCE} – frames will NOT be saved",
+                    f"⚠ Could not open camera device {camera_source} – live view unavailable",
                     "yellow",
                 )
             )
 
         _latest_frame_lock = threading.Lock()
         _capture_stop = threading.Event()
-        _frame_queue = queue.Queue(maxsize=0)
 
         def _capture_loop():
             nonlocal _latest_frame
@@ -465,32 +455,25 @@ start_idx: {start_idx}
                     with _latest_frame_lock:
                         _latest_frame = frame
 
-        def _writer_loop():
-            while True:
-                item = _frame_queue.get()
-                if item is None:
-                    _frame_queue.task_done()
-                    break
-                frame_data, path_str = item
-                cv2.imwrite(path_str, frame_data)
-                _frame_queue.task_done()
-
         _capture_thread = threading.Thread(target=_capture_loop, daemon=True)
-        _writer_thread = threading.Thread(target=_writer_loop, daemon=True)
         _capture_thread.start()
-        _writer_thread.start()
-        print(colored("✓ Camera threads started", "cyan"))
+        print(colored("✓ Camera thread started", "cyan"))
     else:
         print(colored("✓ Camera disabled via --no_cam", "yellow"))
+
+    if live_view and no_cam:
+        print(colored("⚠ --live_view has no effect when --no_cam is set", "yellow"))
 
     # ==================================================================
     # State machine setup
     # ==================================================================
     state = State.WAITING_TO_GO_TO_START
-    prev_state = State.WAITING_TO_GO_TO_START
-    scan_idx = start_idx  # waypoint we are planning to visit next
-    curr_idx = 0  # waypoint robot is currently at
+    prev_state = state
+    scan_idx = start_idx
+    curr_idx = 0
     trajectory_start_time = 0.0
+
+    collected_rays: list[tuple[np.ndarray, np.ndarray]] = []
 
     move_to_start_result = {
         "ready": False,
@@ -505,48 +488,60 @@ start_idx: {start_idx}
         "valid_collisions": True,
         "trajectory": None,
     }
-    optical_axis_ik_result = {
-        "ready": False,
-        "valid_joints": True,
-        "valid_velocities": True,
-        "valid_collisions": True,
-        "trajectory": None,
-    }
-    rrt_result = {
-        "ready": False,
-        "success": False,
-        "trajectory": None,
-        "path": None,
-    }
+    rrt_result = {"ready": False, "success": False, "trajectory": None, "path": None}
+    reset_result = {"ready": False, "success": False, "trajectory": None, "path": None}
 
     hemisphere_trajectory = None
-    optical_axis_trajectory = None
 
-    # Per-scan photo state
-    scan_frame_dir = None
-    optical_pause_start_time = 0.0
-    optical_halfway_time = 0.0
-    capture_traj_times: np.ndarray = np.array([])
-    next_capture_idx = 0
-    scan_frame_idx = 0
-    is_pausing_for_capture = False
-    pause_start_sim_time = 0.0
-    hold_traj_time = 0.0
-
-    optical_safe = True  # set per waypoint in COMPUTING_IKS
-
-    # Timing trackers
-    scan_start_wall_time = None
-    move_durations = []  # trajectory end_time() for each between-scan move
-    optical_axis_traj_time = None  # set once from first optical axis trajectory
-
-    # Button click trackers
-    num_move_to_scan_clicks = 0
+    num_move_to_next_clicks = 0
     num_preview_raw_clicks = 0
     num_preview_smooth_clicks = 0
-    num_execute_clicks = 0
+    num_reset_clicks = 0
+    _kbd_next = False  # set True by Enter key; consumed by next_clicked()
 
-    print(colored("\nReady. Press 'Move to Scan' in Meshcat to begin.", "cyan"))
+    def next_clicked() -> bool:
+        nonlocal num_move_to_next_clicks, _kbd_next
+        btn = meshcat.GetButtonClicks("Move to Next") > num_move_to_next_clicks
+        if btn or _kbd_next:
+            if btn:
+                num_move_to_next_clicks += 1
+            _kbd_next = False
+            return True
+        return False
+
+    KEY_JOG_MAP = {
+        81: (np.array([-1.0, 0.0, 0.0]), "left"),  # ← arrow
+        83: (np.array([1.0, 0.0, 0.0]), "right"),  # → arrow
+        82: (np.array([0.0, -1.0, 0.0]), "up"),  # ↑ arrow
+        84: (np.array([0.0, 1.0, 0.0]), "down"),  # ↓ arrow
+        ord("["): (np.array([0.0, 0.0, -1.0]), "backward"),
+        ord("]"): (np.array([0.0, 0.0, 1.0]), "forward"),
+    }
+
+    MOVING_STATES = {
+        State.COMPUTING_MOVE_TO_START,
+        State.MOVING_TO_START,
+        State.COMPUTING_IKS,
+        State.PLANNING_RRT_FALLBACK,
+        State.COMPUTING_RRT_FALLBACK,
+        State.MOVING_ALONG_HEMISPHERE,
+        State.MOVING_ALONG_RRT,
+        State.REVERTING_TO_SCAN_POSE,
+        State.COMPUTING_RESET,
+        State.RESETTING,
+    }
+    _jog_target_q: np.ndarray | None = None
+    _q_at_scan: np.ndarray | None = None
+    _pending_traj_type: str = ""
+    _at_scan_pose = False
+
+    print(colored("\nReady. Press 'Move to Next' in Meshcat to begin.", "cyan"))
+    print(
+        colored(
+            "  At each viewpoint: jog until object is on the crosshair, then press 'Move to Next'.",
+            "cyan",
+        )
+    )
 
     # ==================================================================
     # Main simulation loop
@@ -556,11 +551,11 @@ start_idx: {start_idx}
             print(colored(f"  [{state.name}]", "grey"))
             prev_state = state
 
-        # Refresh context and current joint positions every iteration
         station_context = station.GetMyContextFromRoot(simulator.get_context())
         internal_plant = station.get_internal_plant()
         internal_plant_context = station.get_internal_plant_context()
         q_now = station.GetOutputPort("iiwa.position_measured").Eval(station_context)
+
         for i in range(7):
             meshcat.SetSliderValue(f"Joint {i+1} (deg)", np.rad2deg(q_now[i]))
 
@@ -573,31 +568,76 @@ start_idx: {start_idx}
         if R_WR_np is not None:
             meshcat.SetSliderValue("Current PSI (deg)", np.rad2deg(psi_rad))
 
-        # Live camera view with crosshairs
-        if not no_cam and _latest_frame_lock is not None:
+        # Clear jog target once robot has arrived
+        if _jog_target_q is not None and np.all(np.abs(q_now - _jog_target_q) < 0.005):
+            _jog_target_q = None
+
+        # Live camera view with crosshair at (cx, cy)
+        if live_view and not no_cam and _latest_frame_lock is not None:
             with _latest_frame_lock:
                 lf = _latest_frame.copy() if _latest_frame is not None else None
             if lf is not None:
-                disp = cv2.resize(lf, (lf.shape[1] // 2, lf.shape[0] // 2))
-                # Red crosshair at calibrated principal point
+                half = (lf.shape[1] // 2, lf.shape[0] // 2)
+                disp = cv2.resize(lf, half)
                 cv2.drawMarker(
-                    disp, (cx_disp, cy_disp), (0, 0, 255), cv2.MARKER_CROSS, 40, 4
-                )
-                # Green crosshair at image center
-                img_cx = disp.shape[1] // 2
-                img_cy = disp.shape[0] // 2
-                cv2.drawMarker(
-                    disp, (img_cx, img_cy), (0, 255, 0), cv2.MARKER_CROSS, 40, 2
+                    disp,
+                    (cx_disp, cy_disp),
+                    (0, 0, 255),
+                    cv2.MARKER_CROSS,
+                    40,
+                    4,
                 )
                 cv2.imshow("Live View", disp)
-                cv2.waitKey(1)
+                cv2.setWindowTitle("Live View", "Live View  —  arrows/[/] to jog")
+                key = cv2.waitKey(1)
+                key_char = key & 0xFF
+                if key_char in KEY_JOG_MAP and state not in MOVING_STATES:
+                    direction, label = KEY_JOG_MAP[key_char]
+                    q_des = try_jog_tip(
+                        station,
+                        q_now,
+                        direction,
+                        0.001,
+                        kinematics_solver,
+                        elbow_angle,
+                        joint_lower_limits,
+                        joint_upper_limits,
+                    )
+                    if q_des is not None:
+                        station.GetInputPort("iiwa.position").FixValue(
+                            station_context, q_des
+                        )
+                        _jog_target_q = q_des
+                        print(colored(f"  [kbd] Jogged {label}", "cyan"))
+                if key_char == 13:  # Enter — triggers "Move to Next"
+                    _kbd_next = True
+
+        # Reset button — available from any non-moving state
+        if state not in MOVING_STATES:
+            if meshcat.GetButtonClicks("Reset") > num_reset_clicks:
+                num_reset_clicks += 1
+                print(colored("Planning RRT* reset to default_position...", "cyan"))
+                reset_result["ready"] = False
+                reset_result["success"] = False
+                threading.Thread(
+                    target=plan_rrt_star_async,
+                    args=(
+                        station,
+                        q_now,
+                        default_position,
+                        vel_limits,
+                        acc_limits,
+                        reset_result,
+                    ),
+                    daemon=True,
+                ).start()
+                state = State.COMPUTING_RESET
 
         # ------------------------------------------------------------------
         if state == State.WAITING_TO_GO_TO_START:
-            if meshcat.GetButtonClicks("Move to Scan") <= num_move_to_scan_clicks:
+            if not next_clicked():
                 simulator.AdvanceTo(simulator.get_context().get_time() + 0.01)
                 continue
-            num_move_to_scan_clicks += 1
 
             first_valid = next(
                 (i for i in range(n) if not np.isnan(q_array[i]).any()), None
@@ -638,7 +678,6 @@ start_idx: {start_idx}
                 )
                 state = State.WAITING_TO_GO_TO_START
             else:
-                scan_start_wall_time = time.time()
                 trajectory_start_time = simulator.get_context().get_time()
                 state = State.MOVING_TO_START
 
@@ -651,17 +690,21 @@ start_idx: {start_idx}
                 station,
             )
             if traj_complete:
-                print(colored("✓ At first waypoint. Starting scan.", "green"))
+                print(
+                    colored(
+                        "✓ At first waypoint. Jog to centre the object, then press 'Move to Next'.",
+                        "green",
+                    )
+                )
+                _at_scan_pose = True
                 state = State.WAITING_FOR_NEXT_SCAN
 
         # ------------------------------------------------------------------
         elif state == State.WAITING_FOR_NEXT_SCAN:
-            # Clear previous path visualizations
             meshcat.Delete("hemisphere_traj")
             meshcat.Delete("rrt_raw_path")
             meshcat.Delete("rrt_traj")
 
-            # Skip pre-computation failures
             while scan_idx < n and np.isnan(q_array[scan_idx]).any():
                 print(
                     colored(
@@ -676,7 +719,8 @@ start_idx: {start_idx}
                 state = State.DONE
                 continue
 
-            print(colored(f"\n── Waypoint {scan_idx}/{n - 1} ──", "cyan"))
+            label = labels[scan_idx] if scan_idx < len(labels) else str(scan_idx)
+            print(colored(f"\n── Waypoint {scan_idx}/{n - 1} ({label}) ──", "cyan"))
 
             pose_target = hemisphere_waypoints[scan_idx]
             draw_triad(
@@ -686,10 +730,8 @@ start_idx: {start_idx}
             eef_pose = internal_plant.GetFrameByName("optical_center").CalcPoseInWorld(
                 internal_plant_context
             )
-            pose_curr = hemisphere_waypoints[scan_idx]
 
-            # Launch hemisphere IK thread (skipped unless --use_hemisphere)
-            if not use_hemisphere:
+            if only_rrt:
                 hemisphere_ik_result["ready"] = True
                 hemisphere_ik_result["valid_joints"] = False
                 hemisphere_ik_result["valid_velocities"] = False
@@ -697,9 +739,6 @@ start_idx: {start_idx}
                 hemisphere_ik_result["trajectory"] = None
             else:
                 hemisphere_ik_result["ready"] = False
-                traj_save_path = (
-                    scans_base / "trajectory_data" / f"waypoint_{scan_idx:05d}"
-                )
                 threading.Thread(
                     target=compute_hemisphere_traj_async,
                     args=(
@@ -720,45 +759,13 @@ start_idx: {start_idx}
                         speed_factor,
                         max_joint_velocities,
                     ),
-                    kwargs={
-                        "save_path": traj_save_path,
-                        "plot_save_dir": scans_base / f"scan{scan_idx:02d}",
-                    },
                     daemon=True,
                 ).start()
-
-            if not skip_opt:
-                optical_axis_ik_result["ready"] = False
-                threading.Thread(
-                    target=compute_optical_axis_traj_async,
-                    args=(
-                        station,
-                        pose_curr,
-                        kinematics_solver,
-                        q_array[scan_idx],
-                        elbow_angle,
-                        optical_axis_ik_result,
-                        True,
-                        scan_idx,
-                        joint_lower_limits,
-                        joint_upper_limits,
-                        distance_along_optical_axis,
-                        speed_factor,
-                        max_joint_velocities,
-                    ),
-                    daemon=True,
-                ).start()
-            else:
-                optical_axis_ik_result["ready"] = True
-
             state = State.COMPUTING_IKS
 
         # ------------------------------------------------------------------
         elif state == State.COMPUTING_IKS:
-            both_ready = hemisphere_ik_result["ready"] and (
-                skip_opt or optical_axis_ik_result["ready"]
-            )
-            if not both_ready:
+            if not hemisphere_ik_result["ready"]:
                 simulator.AdvanceTo(simulator.get_context().get_time() + 0.01)
                 continue
 
@@ -767,44 +774,6 @@ start_idx: {start_idx}
                 hemisphere_ik_result["valid_joints"]
                 and hemisphere_ik_result["valid_velocities"]
             )
-
-            # Set up optical axis + photo state for this scan
-            if not skip_opt:
-                optical_safe = (
-                    optical_axis_ik_result["valid_joints"]
-                    and optical_axis_ik_result["valid_velocities"]
-                )
-                if not optical_safe:
-                    if not optical_axis_ik_result["valid_joints"]:
-                        print(
-                            colored(
-                                f"  ⚠ Optical axis traj for waypoint {scan_idx}: joint-limit violation — skipping scan.",
-                                "yellow",
-                            )
-                        )
-                    if not optical_axis_ik_result["valid_velocities"]:
-                        print(
-                            colored(
-                                f"  ⚠ Optical axis traj for waypoint {scan_idx}: velocity violation — skipping scan.",
-                                "yellow",
-                            )
-                        )
-                else:
-                    optical_axis_trajectory = optical_axis_ik_result["trajectory"]
-                    if optical_axis_traj_time is None:
-                        optical_axis_traj_time = optical_axis_trajectory.end_time()
-                    optical_halfway_time = optical_axis_trajectory.end_time() / 2.0
-                    scan_frame_dir = scans_base / f"scan{scan_idx:02d}"
-                    scan_frame_dir.mkdir(parents=True, exist_ok=True)
-                    capture_traj_times = np.linspace(
-                        0.0, optical_halfway_time, num_pictures
-                    )
-                    next_capture_idx = 0
-                    scan_frame_idx = 0
-                    is_pausing_for_capture = False
-                    pause_start_sim_time = 0.0
-                    hold_traj_time = 0.0
-                    print(colored(f"  Frame dir: {scan_frame_dir}", "cyan"))
 
             if hemisphere_valid:
                 plot_trajectory_in_meshcat(
@@ -816,8 +785,8 @@ start_idx: {start_idx}
                 if wait:
                     print(
                         colored(
-                            f"  ✓ Hemisphere trajectory ready for waypoint {scan_idx}.\n"
-                            "    Press 'Execute Path' to run it.",
+                            f"  ✓ Hemisphere trajectory ready.\n"
+                            "    Press 'Move to Next' or Enter to execute.",
                             "green",
                         )
                     )
@@ -839,12 +808,25 @@ start_idx: {start_idx}
 
         # ------------------------------------------------------------------
         elif state == State.AWAITING_HEMISPHERE_CONFIRM:
-            execute = meshcat.GetButtonClicks("Execute Path") > num_execute_clicks
-            if execute:
-                num_execute_clicks += 1
-                trajectory_start_time = simulator.get_context().get_time()
-                print(colored("  Executing hemisphere trajectory...", "green"))
-                state = State.MOVING_ALONG_HEMISPHERE
+            if next_clicked():
+                if _q_at_scan is not None and np.any(
+                    np.abs(q_now - _q_at_scan) > 0.005
+                ):
+                    print(
+                        colored(
+                            "  Robot was jogged — reverting to scan pose first...",
+                            "cyan",
+                        )
+                    )
+                    station.GetInputPort("iiwa.position").FixValue(
+                        station_context, _q_at_scan
+                    )
+                    _pending_traj_type = "hemisphere"
+                    state = State.REVERTING_TO_SCAN_POSE
+                else:
+                    trajectory_start_time = simulator.get_context().get_time()
+                    print(colored("  Executing hemisphere trajectory...", "green"))
+                    state = State.MOVING_ALONG_HEMISPHERE
 
         # ------------------------------------------------------------------
         elif state == State.PLANNING_RRT_FALLBACK:
@@ -881,7 +863,6 @@ start_idx: {start_idx}
                 )
                 break
 
-            # Draw both path visualizations
             plot_rrt_raw_path_in_meshcat(
                 station,
                 rrt_result["path"],
@@ -898,14 +879,14 @@ start_idx: {start_idx}
                 print(
                     colored(
                         "  ✓ RRT*-Connect found path.\n"
-                        "    Press 'Preview RRT* Raw', 'Preview RRT* Smooth', or 'Execute Path'.",
+                        "    Press 'Preview RRT* Raw', 'Preview RRT* Smooth', or 'Move to Next' / Enter.",
                         "green",
                     )
                 )
                 state = State.AWAITING_RRT_CONFIRM
             else:
-                trajectory_start_time = simulator.get_context().get_time()
                 print(colored("  ✓ RRT*-Connect found path. Executing...", "green"))
+                trajectory_start_time = simulator.get_context().get_time()
                 state = State.MOVING_ALONG_RRT
 
         # ------------------------------------------------------------------
@@ -917,7 +898,7 @@ start_idx: {start_idx}
                 meshcat.GetButtonClicks("Preview RRT* Smooth")
                 > num_preview_smooth_clicks
             )
-            execute = meshcat.GetButtonClicks("Execute Path") > num_execute_clicks
+            execute = next_clicked()
 
             if preview_raw:
                 num_preview_raw_clicks += 1
@@ -926,7 +907,6 @@ start_idx: {start_idx}
                     rrt_result["path"], station, station_context, simulator, meshcat
                 )
                 print(colored("  ✓ Raw preview done.", "cyan"))
-
             elif preview_smooth:
                 num_preview_smooth_clicks += 1
                 print(colored("  Animating TOPPRA-smoothed trajectory...", "cyan"))
@@ -937,153 +917,143 @@ start_idx: {start_idx}
                     smooth_configs, station, station_context, simulator, meshcat
                 )
                 print(colored("  ✓ Smooth preview done.", "cyan"))
-
             elif execute:
-                num_execute_clicks += 1
-                trajectory_start_time = simulator.get_context().get_time()
-                print(colored("  Executing RRT* trajectory...", "green"))
-                state = State.MOVING_ALONG_RRT
+                if _q_at_scan is not None and np.any(
+                    np.abs(q_now - _q_at_scan) > 0.005
+                ):
+                    print(
+                        colored(
+                            "  Robot was jogged — reverting to scan pose first...",
+                            "cyan",
+                        )
+                    )
+                    station.GetInputPort("iiwa.position").FixValue(
+                        station_context, _q_at_scan
+                    )
+                    _pending_traj_type = "rrt"
+                    state = State.REVERTING_TO_SCAN_POSE
+                else:
+                    trajectory_start_time = simulator.get_context().get_time()
+                    print(colored("  Executing RRT* trajectory...", "green"))
+                    state = State.MOVING_ALONG_RRT
 
         # ------------------------------------------------------------------
         elif state == State.MOVING_ALONG_RRT:
+            traj = rrt_result["trajectory"]
             traj_complete = move_along_trajectory(
-                rrt_result["trajectory"],
-                trajectory_start_time,
-                simulator,
-                station,
+                traj, trajectory_start_time, simulator, station
             )
             if traj_complete:
-                move_durations.append(rrt_result["trajectory"].end_time())
+                _q_at_scan = q_now.copy()
                 curr_idx = scan_idx
-                scan_idx += 1
-                if skip_opt or not optical_safe:
-                    state = State.WAITING_FOR_NEXT_SCAN
-                else:
-                    optical_pause_start_time = simulator.get_context().get_time()
-                    state = State.WAITING_BEFORE_OPTICAL
+                _at_scan_pose = True
+                state = State.AWAITING_JOG_CONFIRM
 
         # ------------------------------------------------------------------
         elif state == State.MOVING_ALONG_HEMISPHERE:
+            traj = hemisphere_trajectory
             traj_complete = move_along_trajectory(
-                hemisphere_trajectory,
-                trajectory_start_time,
-                simulator,
-                station,
+                traj, trajectory_start_time, simulator, station
             )
             if traj_complete:
-                move_durations.append(hemisphere_trajectory.end_time())
+                _q_at_scan = q_now.copy()
                 curr_idx = scan_idx
-                scan_idx += 1
-                if skip_opt or not optical_safe:
-                    state = State.WAITING_FOR_NEXT_SCAN
-                else:
-                    optical_pause_start_time = simulator.get_context().get_time()
-                    state = State.WAITING_BEFORE_OPTICAL
+                _at_scan_pose = True
+                state = State.AWAITING_JOG_CONFIRM
 
         # ------------------------------------------------------------------
-        elif state == State.WAITING_BEFORE_OPTICAL:
-            if simulator.get_context().get_time() - optical_pause_start_time >= 2.0:
+        elif state == State.REVERTING_TO_SCAN_POSE:
+            station.GetInputPort("iiwa.position").FixValue(station_context, _q_at_scan)
+            if np.all(np.abs(q_now - _q_at_scan) < 0.01):
+                print(
+                    colored("  ✓ Back at scan pose. Executing trajectory...", "green")
+                )
                 trajectory_start_time = simulator.get_context().get_time()
-                state = State.MOVING_DOWN_OPTICAL_AXIS
+                state = (
+                    State.MOVING_ALONG_HEMISPHERE
+                    if _pending_traj_type == "hemisphere"
+                    else State.MOVING_ALONG_RRT
+                )
 
         # ------------------------------------------------------------------
-        elif state == State.MOVING_DOWN_OPTICAL_AXIS:
-            current_time = simulator.get_context().get_time()
-            traj_time = current_time - trajectory_start_time
-
-            station_context_mut = station.GetMyMutableContextFromRoot(
-                simulator.get_mutable_context()
-            )
-
-            if is_pausing_for_capture:
-                # Hold robot still during photo pause
-                q_hold = optical_axis_trajectory.value(hold_traj_time)
-                station.GetInputPort("iiwa.position").FixValue(
-                    station_context_mut, q_hold
-                )
-
-                elapsed_pause = current_time - pause_start_sim_time
-                if elapsed_pause >= 0.5:
-                    # Save camera pose
-                    if scan_frame_dir is not None:
-                        cam_pose = internal_plant.GetFrameByName(
-                            "optical_center"
-                        ).CalcPoseInWorld(internal_plant_context)
-                        np.save(
-                            str(scan_frame_dir / f"pose_{scan_frame_idx:05d}.npy"),
-                            cam_pose.GetAsMatrix4(),
-                        )
-
-                    if not no_cam:
-                        with _latest_frame_lock:
-                            frame = (
-                                _latest_frame.copy()
-                                if _latest_frame is not None
-                                else None
-                            )
-                        if frame is not None and scan_frame_dir is not None:
-                            frame_path = str(
-                                scan_frame_dir / f"frame_{scan_frame_idx:05d}.png"
-                            )
-                            _frame_queue.put((frame, frame_path))
-                            scan_frame_idx += 1
-                            print(
-                                colored(
-                                    f"  📷 {scan_frame_idx}/{num_pictures} "
-                                    f"at t={hold_traj_time:.3f}s",
-                                    "cyan",
-                                )
-                            )
-                    trajectory_start_time += elapsed_pause
-                    next_capture_idx += 1
-                    is_pausing_for_capture = False
-
-            elif traj_time <= optical_axis_trajectory.end_time():
-                q_desired = optical_axis_trajectory.value(traj_time)
-                station.GetInputPort("iiwa.position").FixValue(
-                    station_context_mut, q_desired
-                )
-
-                # Trigger photo stop if reached next scheduled time
-                if (
-                    next_capture_idx < len(capture_traj_times)
-                    and traj_time >= capture_traj_times[next_capture_idx]
-                ):
-                    hold_traj_time = capture_traj_times[next_capture_idx]
-                    pause_start_sim_time = current_time
-                    is_pausing_for_capture = True
+        elif state == State.AWAITING_JOG_CONFIRM:
+            # Jog until object is centred on crosshair, then record
+            if next_clicked():
+                T_world_cam = internal_plant.GetFrameByName(
+                    "optical_center"
+                ).CalcPoseInWorld(internal_plant_context)
+                origin = T_world_cam.translation()
+                # Optical axis = optical_center +z rotated to world frame
+                direction = T_world_cam.rotation().matrix()[:, 2]
+                direction = direction / np.linalg.norm(direction)
+                print_ray(origin, direction, scan_idx=curr_idx)
+                meshcat.Delete(f"ray_{curr_idx}")
+                visualize_ray(meshcat, origin, direction, name=f"ray_{curr_idx}")
+                collected_rays.append((origin.copy(), direction.copy()))
+                scan_idx += 1
+                if scan_idx >= n:
                     print(
                         colored(
-                            f"  ⏸ Stop {next_capture_idx + 1}/{num_pictures} "
-                            f"at t={hold_traj_time:.3f}s",
-                            "yellow",
+                            "✓ All rays recorded. Returning to default_position...",
+                            "green",
                         )
                     )
+                    reset_result["ready"] = False
+                    reset_result["success"] = False
+                    threading.Thread(
+                        target=plan_rrt_star_async,
+                        args=(
+                            station,
+                            q_now,
+                            default_position,
+                            vel_limits,
+                            acc_limits,
+                            reset_result,
+                        ),
+                        daemon=True,
+                    ).start()
+                    state = State.COMPUTING_RESET
+                else:
+                    state = State.WAITING_FOR_NEXT_SCAN
 
-            elif traj_time > optical_axis_trajectory.end_time() + 1.0:
-                print(colored("  ✓ Optical axis trajectory complete.", "green"))
-                state = State.WAITING_FOR_NEXT_SCAN
+        # ------------------------------------------------------------------
+        elif state == State.COMPUTING_RESET:
+            if not reset_result["ready"]:
+                simulator.AdvanceTo(simulator.get_context().get_time() + 0.01)
+                continue
+            if not reset_result["success"]:
+                print(colored("❌ RRT* reset planning failed.", "red"))
+                state = State.WAITING_TO_GO_TO_START
+            else:
+                plot_rrt_raw_path_in_meshcat(
+                    station,
+                    reset_result["path"],
+                    name="rrt_raw_path",
+                    rgba=Rgba(1.0, 0.4, 0.0, 1.0),
+                )
+                plot_trajectory_in_meshcat(
+                    station,
+                    reset_result["trajectory"],
+                    rgba=Rgba(0, 1, 1, 1),
+                    name="rrt_traj",
+                )
+                trajectory_start_time = simulator.get_context().get_time()
+                print(colored("  Executing reset trajectory...", "green"))
+                state = State.RESETTING
+
+        # ------------------------------------------------------------------
+        elif state == State.RESETTING:
+            traj_complete = move_along_trajectory(
+                reset_result["trajectory"], trajectory_start_time, simulator, station
+            )
+            if traj_complete:
+                print(colored("✓ Reset to default_position.", "green"))
+                _at_scan_pose = False
+                _q_at_scan = None
+                state = State.DONE if scan_idx >= n else State.WAITING_TO_GO_TO_START
 
         # ------------------------------------------------------------------
         elif state == State.DONE:
-            # Append timing data to params file
-            total_run_s = (
-                time.time() - scan_start_wall_time if scan_start_wall_time else 0.0
-            )
-            avg_move_s = float(np.mean(move_durations)) if move_durations else 0.0
-            timing_text = (
-                f"\n# Timing\n"
-                f"total_run_time_s: {total_run_s:.2f}\n"
-                f"num_moves: {len(move_durations)}\n"
-                f"move_times_s: {[round(t, 3) for t in move_durations]}\n"
-                f"avg_move_time_s: {avg_move_s:.3f}\n"
-                f"optical_axis_traj_time_s: {round(optical_axis_traj_time, 3) if optical_axis_traj_time is not None else 'N/A'}\n"
-            )
-            with open(scans_base / "scan_params.txt", "a") as f:
-                f.write(timing_text)
-            print(colored(f"✓ Timing data appended to scan_params.txt", "cyan"))
-
-            # Save joint trajectory log
             ctx = simulator.get_context()
             log = state_logger.FindLog(ctx)
             t_log = log.sample_times()
@@ -1099,51 +1069,45 @@ start_idx: {start_idx}
             )
             print(colored(f"✓ Joint log saved → {log_path}", "cyan"))
 
-            # Save combined joint positions + velocities plot
-            from matplotlib.backends.backend_agg import FigureCanvasAgg
-            from matplotlib.figure import Figure
-
-            dt_log = np.diff(t_log)
-            vel_log = np.diff(data_log, axis=1) / dt_log[np.newaxis, :]
-            vel_t_log = t_log[:-1]
-
-            fig = Figure(figsize=(18, 14))
-            FigureCanvasAgg(fig)
-            axes = fig.subplots(7, 2, sharex="col")
-            fig.suptitle(
-                "Joint Log - Positions & Velocities", fontsize=14, fontweight="bold"
-            )
-            for i in range(7):
-                ax_p = axes[i, 0]
-                ax_p.plot(t_log, np.rad2deg(data_log[i]), linewidth=1.0, color="C0")
-                ax_p.set_ylabel(f"J{i+1}\n(deg)", fontsize=8)
-                ax_p.grid(True, alpha=0.3)
-                if i == 0:
-                    ax_p.set_title("Joint Positions", fontsize=11)
-                if i == 6:
-                    ax_p.set_xlabel("Time (s)", fontsize=10)
-
-                ax_v = axes[i, 1]
-                ax_v.plot(vel_t_log, np.rad2deg(vel_log[i]), linewidth=1.0, color="C1")
-                ax_v.set_ylabel("(deg/s)", fontsize=8)
-                ax_v.grid(True, alpha=0.3)
-                if i == 0:
-                    ax_v.set_title("Joint Velocities", fontsize=11)
-                if i == 6:
-                    ax_v.set_xlabel("Time (s)", fontsize=10)
-                if max_joint_velocities is not None:
-                    lim = np.rad2deg(max_joint_velocities[i])
-                    ax_v.axhline(
-                        lim, color="red", linestyle="--", linewidth=1.0, alpha=0.8
+            if collected_rays:
+                origins = np.array([ray[0] for ray in collected_rays])
+                directions = np.array([ray[1] for ray in collected_rays])
+                rays_path = centering_dir / "rays.npy"
+                np.save(rays_path, np.stack([origins, directions], axis=1))
+                print(
+                    colored(
+                        f"✓ Rays saved → {rays_path}  ({len(collected_rays)} rays)",
+                        "cyan",
                     )
-                    ax_v.axhline(
-                        -lim, color="red", linestyle="--", linewidth=1.0, alpha=0.8
-                    )
+                )
 
-            fig.tight_layout()
-            log_plot_path = outputs_dir / "joint_log.png"
-            fig.savefig(log_plot_path, dpi=150, bbox_inches="tight")
-            print(colored(f"✓ Joint log plot saved → {log_plot_path}", "cyan"))
+                if len(collected_rays) >= 2:
+                    predicted = least_squares_ray_intersection(origins, directions)
+                    print(
+                        colored(
+                            f"\n  Predicted object centre (LS):\n"
+                            f"    x = {predicted[0]:.6f}\n"
+                            f"    y = {predicted[1]:.6f}\n"
+                            f"    z = {predicted[2]:.6f}",
+                            "green",
+                        )
+                    )
+                    np.save(center_path, predicted)
+                    print(
+                        colored(
+                            f"✓ Predicted center saved → {center_path}",
+                            "cyan",
+                        )
+                    )
+                    visualize_predicted_center(meshcat, predicted)
+                else:
+                    print(colored("  Need ≥ 2 rays for LS intersection.", "yellow"))
+            else:
+                print(
+                    colored("  No rays collected — skipping LS intersection.", "yellow")
+                )
+
+            print(colored("\nScan complete. Press 'Stop Simulation' to exit.", "cyan"))
             break
 
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.01)
@@ -1153,69 +1117,76 @@ start_idx: {start_idx}
     # ==================================================================
     for btn in [
         "Stop Simulation",
-        "Move to Scan",
+        "Move to Next",
         "Preview RRT* Raw",
         "Preview RRT* Smooth",
-        "Execute Path",
+        "Reset",
     ]:
         meshcat.DeleteButton(btn)
     for i in range(7):
         meshcat.DeleteSlider(f"Joint {i+1} (deg)")
     meshcat.DeleteSlider("Current PSI (deg)")
 
-    cv2.destroyAllWindows()
+    if live_view or not no_cam:
+        cv2.destroyAllWindows()
 
     if not no_cam and camera is not None:
         _capture_stop.set()
-        _frame_queue.put(None)
         _capture_thread.join(timeout=5)
-        _writer_thread.join(timeout=30)
         camera.release()
         print(colored("✓ Camera shut down cleanly.", "cyan"))
 
-    print(colored("Simulation ended.", "cyan"))
+    print(colored("Session ended.", "cyan"))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Find object centre by shooting optical-axis rays from 5 centering viewpoints.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python robot_scan/find_center_wo_intrinsics.py --use_hardware
+        """,
+    )
     parser.add_argument(
         "--use_hardware", action="store_true", help="Connect to real iiwa hardware."
     )
-    parser.add_argument("--no_cam", action="store_true", help="Disable camera capture.")
+    parser.add_argument("--no_cam", action="store_true", help="Disable camera.")
     parser.add_argument(
-        "--skip_opt",
+        "--no_live_view",
         action="store_true",
-        help="Skip optical axis trajectory (no photos).",
+        help="Disable live camera feed window (live view is on by default).",
     )
     parser.add_argument(
         "--start_idx",
         type=int,
         default=0,
-        help="Waypoint index to start scanning from (default: 0).",
+        help="Waypoint index to start from (default: 0).",
+    )
+    parser.add_argument(
+        "--camera_source",
+        type=int,
+        default=CAMERA_SOURCE,
+        help="Camera device number.",
     )
     parser.add_argument(
         "--wait",
         action="store_true",
-        help="Pause and wait for 'Execute Path' confirmation before each trajectory (default: execute immediately).",
+        help="Pause and wait for 'Move to Next' confirmation before each trajectory (default: execute immediately).",
     )
     parser.add_argument(
-        "--num_scan_points",
-        type=int,
-        default=NUM_SCAN_POINTS,
-        help=f"Number of hemisphere scan points (default: {NUM_SCAN_POINTS}).",
-    )
-    parser.add_argument(
-        "--use_hemisphere",
+        "--only_rrt",
         action="store_true",
-        help="Use hemisphere trajectory for inter-waypoint moves (default: always use RRT*).",
+        help="Always use RRT* for inter-waypoint moves; never use hemisphere trajectory.",
     )
+
     args = parser.parse_args()
     main(
         use_hardware=args.use_hardware,
         no_cam=args.no_cam,
-        skip_opt=args.skip_opt,
         start_idx=args.start_idx,
+        live_view=not args.no_live_view,
+        camera_source=args.camera_source,
         wait=args.wait,
-        num_scan_points=args.num_scan_points,
-        use_hemisphere=args.use_hemisphere,
+        only_rrt=args.only_rrt,
     )

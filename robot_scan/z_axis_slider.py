@@ -119,8 +119,7 @@ def main(use_hardware: bool) -> None:
         "station",
         IiwaHardwareStationDiagram(
             scenario=scenario,
-            hemisphere_dist=hemisphere_dist,
-            hemisphere_angle=hemisphere_angle,
+            hemisphere_pos=hemisphere_pos,
             hemisphere_radius=hemisphere_radius,
             use_hardware=use_hardware,
         ),

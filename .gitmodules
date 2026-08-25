@@ -1,6 +1,3 @@
-[submodule "microscope-data"]
-	path = microscope-data
-	url = https://huggingface.co/datasets/microscope-project/microscope-data
 [submodule "focus-stack"]
 	path = focus-stack
 	url = https://github.com/razarcon3/focus-stack.git

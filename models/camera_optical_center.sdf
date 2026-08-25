@@ -1,0 +1,38 @@
+<?xml version="1.0" ?>
+<!--
+  Calibrated camera optical center — visual marker only, no collision.
+  Welded to iiwa_link_ee_kuka via iiwa14_microscope.dmd.yaml using
+  T_cam_to_flange from the eye-in-hand calibration output.
+  Update the X_PC in iiwa14_microscope.dmd.yaml after each calibration run.
+-->
+<sdf version="1.7">
+  <model name="camera_optical_center">
+    <static>false</static>
+
+    <link name="optical_center">
+      <pose>0 0 0 0 0 0</pose>
+
+      <!-- Blue sphere at optical center -->
+      <visual name="optical_center_sphere">
+        <geometry>
+          <sphere>
+            <radius>0.006</radius>
+          </sphere>
+        </geometry>
+        <material>
+          <ambient>1.0 0.0 0.0 0.9</ambient>
+          <diffuse>1.0 0.0 0.0 0.9</diffuse>
+        </material>
+      </visual>
+
+      <!-- Minimal inertia so Drake doesn't complain -->
+      <inertial>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1e-9</ixx><iyy>1e-9</iyy><izz>1e-9</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+    </link>
+  </model>
+</sdf>

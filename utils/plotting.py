@@ -289,51 +289,175 @@ def plot_hemisphere_waypoints(
     )
 
 
+def _draw_hemisphere_surface(ax, center, radius):
+    u = np.linspace(0, 2 * np.pi, 40)
+    v = np.linspace(0, np.pi, 20)
+    xs = center[0] + radius * np.outer(np.cos(u), np.sin(v))
+    ys = center[1] + radius * np.outer(np.sin(u), np.sin(v))
+    zs = center[2] + radius * np.outer(np.ones_like(u), np.cos(v))
+    ax.plot_surface(xs, ys, zs, alpha=0.08, color="lightgray", edgecolor="none")
+
+
+def plot_hemisphere_ik_results(
+    waypoints,
+    failed_indices,
+    hemisphere_pos,
+    hemisphere_radius,
+    output_dir,
+):
+    """
+    Save two hemisphere plots after IK pre-computation:
+      hemisphere_waypoints_success.png  — reachable waypoints (green)
+      hemisphere_waypoints_failed.png   — failed waypoints (red)
+    """
+    from pathlib import Path
+
+    output_dir = Path(output_dir)
+    failed_set = set(failed_indices)
+    success_pts = np.array(
+        [wp.translation() for i, wp in enumerate(waypoints) if i not in failed_set]
+    )
+    failed_pts = (
+        np.array(
+            [wp.translation() for i, wp in enumerate(waypoints) if i in failed_set]
+        )
+        if failed_indices
+        else np.empty((0, 3))
+    )
+
+    center = np.asarray(hemisphere_pos)
+    radius = hemisphere_radius
+
+    for pts, label, color, fname in [
+        (
+            success_pts,
+            f"Reachable ({len(success_pts)})",
+            "green",
+            "hemisphere_waypoints_success.png",
+        ),
+        (
+            failed_pts,
+            f"Failed ({len(failed_pts)})",
+            "red",
+            "hemisphere_waypoints_failed.png",
+        ),
+    ]:
+        fig = plt.figure(figsize=(8, 7))
+        ax = fig.add_subplot(111, projection="3d")
+        _draw_hemisphere_surface(ax, center, radius)
+        ax.scatter(
+            center[0],
+            center[1],
+            center[2],
+            color="black",
+            s=60,
+            marker="x",
+            label="Center",
+            zorder=5,
+        )
+        if pts.shape[0] > 0:
+            ax.scatter(
+                pts[:, 0],
+                pts[:, 1],
+                pts[:, 2],
+                color=color,
+                s=18,
+                label=label,
+                depthshade=True,
+            )
+        ax.set_title(f"IK {label}")
+        ax.set_xlabel("X (m)")
+        ax.set_ylabel("Y (m)")
+        ax.set_zlabel("Z (m)")
+        ax.set_box_aspect([1, 1, 1])
+        ax.legend(loc="upper right", fontsize=8)
+        out = output_dir / fname
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(colored(f"✓ Saved → {out}", "cyan"))
+
+
 def plot_hemisphere_trajectory(
     trajectory_joint_poses,
     hemisphere_t,
     scan_idx,
     joint_lower_limits=None,
     joint_upper_limits=None,
+    max_joint_velocities=None,
+    save_dir=None,
 ):
     """
-    Generate and save hemisphere trajectory plot.
+    Generate and save hemisphere trajectory plot: joint values (left) and velocities (right).
     """
     matplotlib.use("Agg", force=True)
 
-    hemisphere_dir = Path(__file__).parent.parent / "outputs" / "hemisphere_paths"
+    if save_dir is not None:
+        hemisphere_dir = Path(save_dir)
+    else:
+        hemisphere_dir = Path(__file__).parent.parent / "outputs" / "hemisphere_paths"
     hemisphere_dir.mkdir(parents=True, exist_ok=True)
 
     joint_names = [f"Joint {i+1}" for i in range(7)]
 
-    fig = Figure(figsize=(10, 12))
+    # Compute velocities via finite differences
+    dt = np.diff(hemisphere_t)
+    vel_rad = np.diff(trajectory_joint_poses, axis=1) / dt[np.newaxis, :]
+    vel_deg = np.rad2deg(vel_rad)
+    vel_t = hemisphere_t[:-1]  # midpoints (length n-1)
+
+    fig = Figure(figsize=(18, 14))
     FigureCanvasAgg(fig)
-    axes = fig.subplots(7, 1, sharex=True)
+    axes = fig.subplots(7, 2, sharex="col")
     fig.suptitle(
         f"Hemisphere Trajectory - Scan {scan_idx}", fontsize=14, fontweight="bold"
     )
 
     for i in range(7):
+        # ── Left column: joint values ──────────────────────────────────────
+        ax_pos = axes[i, 0]
         data_deg = np.rad2deg(trajectory_joint_poses[i, :])
-        axes[i].plot(hemisphere_t, data_deg, linewidth=1.5, color="C0")
-        axes[i].set_ylabel(f"{joint_names[i]} (deg)", fontsize=10)
-        axes[i].grid(True, alpha=0.3)
+        ax_pos.plot(hemisphere_t, data_deg, linewidth=1.5, color="C0")
+        ax_pos.set_ylim(-180, 180)
+        ax_pos.set_ylabel(f"{joint_names[i]}\n(deg)", fontsize=9)
+        ax_pos.grid(True, alpha=0.3)
+        if i == 0:
+            ax_pos.set_title("Joint Values", fontsize=11)
         if i == 6:
-            axes[i].set_xlabel("Time (s)", fontsize=10)
-        # Draw joint limit lines only if the limit is within the data range
-        data_min, data_max = data_deg.min(), data_deg.max()
+            ax_pos.set_xlabel("Time (s)", fontsize=10)
         if joint_lower_limits is not None:
-            lo_deg = np.rad2deg(joint_lower_limits[i])
-            if data_min <= lo_deg <= data_max:
-                axes[i].axhline(
-                    lo_deg, color="red", linestyle="--", linewidth=1.2, alpha=0.8
-                )
+            ax_pos.axhline(
+                np.rad2deg(joint_lower_limits[i]),
+                color="red",
+                linestyle="--",
+                linewidth=1.2,
+                alpha=0.8,
+            )
         if joint_upper_limits is not None:
-            hi_deg = np.rad2deg(joint_upper_limits[i])
-            if data_min <= hi_deg <= data_max:
-                axes[i].axhline(
-                    hi_deg, color="red", linestyle="--", linewidth=1.2, alpha=0.8
-                )
+            ax_pos.axhline(
+                np.rad2deg(joint_upper_limits[i]),
+                color="red",
+                linestyle="--",
+                linewidth=1.2,
+                alpha=0.8,
+            )
+
+        # ── Right column: joint velocities ─────────────────────────────────
+        ax_vel = axes[i, 1]
+        ax_vel.plot(vel_t, vel_deg[i], linewidth=1.5, color="C1")
+        ax_vel.set_ylabel("(deg/s)", fontsize=9)
+        ax_vel.grid(True, alpha=0.3)
+        if i == 0:
+            ax_vel.set_title("Joint Velocities", fontsize=11)
+        if i == 6:
+            ax_vel.set_xlabel("Time (s)", fontsize=10)
+        if max_joint_velocities is not None:
+            lim_deg = np.rad2deg(max_joint_velocities[i])
+            ax_vel.axhline(
+                lim_deg, color="red", linestyle="--", linewidth=1.2, alpha=0.8
+            )
+            ax_vel.axhline(
+                -lim_deg, color="red", linestyle="--", linewidth=1.2, alpha=0.8
+            )
 
     fig.tight_layout()
     hemisphere_path = hemisphere_dir / f"scan_{scan_idx:02d}.png"
@@ -401,6 +525,7 @@ def save_trajectory_plots(
     scan_idx,
     joint_lower_limits=None,
     joint_upper_limits=None,
+    max_joint_velocities=None,
 ):
     """
     Save hemisphere and optical axis trajectory plots to separate files.
@@ -411,6 +536,7 @@ def save_trajectory_plots(
         scan_idx,
         joint_lower_limits,
         joint_upper_limits,
+        max_joint_velocities=max_joint_velocities,
     )
     plot_optical_axis_trajectory(
         optical_traj,
