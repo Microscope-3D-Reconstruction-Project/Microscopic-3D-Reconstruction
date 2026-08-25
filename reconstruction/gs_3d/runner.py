@@ -1,8 +1,8 @@
 """Runner — orchestrates setup, rasterization, and the training loop.
 
 Heavy output concerns are delegated:
-  TrainingLogger  (trainer/logger.py)    — TensorBoard, checkpoints, PLY export
-  Evaluator       (trainer/evaluator.py) — eval metrics, videos, compression
+  TrainingLogger  (gs_3d/logger.py)    — TensorBoard, checkpoints, PLY export
+  Evaluator       (gs_3d/evaluator.py) — eval metrics, videos, compression
 
 The training loop (``train``) is kept readable by extracting one full
 forward-backward-optimizer iteration into ``_train_step``.
@@ -20,25 +20,25 @@ import torch.nn.functional as F
 import tqdm
 import viser
 import yaml
+import torchvision
 
 from datasets.colmap import Dataset, Parser
 from fused_ssim import fused_ssim
 from gsplat.compression import PngCompression
 from gsplat.rendering import rasterization
 from gsplat.strategy import DefaultStrategy, MCMCStrategy
-from gsplat_viewer import GsplatRenderTabState, GsplatViewer
 from nerfview import CameraState, RenderTabState, apply_float_colormap
 from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from typing_extensions import Literal, assert_never
-
-from utils import AppearanceOptModule, CameraOptModule, set_random_seed
+from visualizers.gsplat_viewer_3dgs import GsplatRenderTabState, GsplatViewer
 
 from .config import Config
 from .evaluator import Evaluator
 from .logger import TrainingLogger
 from .model import create_splats_with_optimizers
+from .utils import AppearanceOptModule, CameraOptModule, set_random_seed
 
 
 class Runner:
@@ -75,7 +75,7 @@ class Runner:
         world_size: int,
         cfg: Config,
     ) -> None:
-        set_random_seed(42 + local_rank)
+        set_random_seed(cfg.random_seed + local_rank)
 
         self.cfg = cfg
         self.world_rank = world_rank
@@ -117,21 +117,24 @@ class Runner:
     # ── Setup helpers ─────────────────────────────────────────────────────────
 
     def _setup_dirs(self) -> None:
-        """Create the output directory tree under ``cfg.result_dir``."""
+        """Create the output directory tree under ``cfg.splat_dir``."""
         cfg = self.cfg
         for subdir in ("", "ckpts", "stats", "renders", "ply"):
-            os.makedirs(os.path.join(cfg.result_dir, subdir), exist_ok=True)
-        self.ckpt_dir = f"{cfg.result_dir}/ckpts"
-        self.stats_dir = f"{cfg.result_dir}/stats"
-        self.render_dir = f"{cfg.result_dir}/renders"
-        self.ply_dir = f"{cfg.result_dir}/ply"
-        self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
+            os.makedirs(os.path.join(cfg.splat_dir, subdir), exist_ok=True)
+        self.ckpt_dir = f"{cfg.splat_dir}/ckpts"
+        self.stats_dir = f"{cfg.splat_dir}/stats"
+        self.render_dir = f"{cfg.splat_dir}/renders"
+        self.ply_dir = f"{cfg.splat_dir}/ply"
+        self.writer = SummaryWriter(log_dir=f"{cfg.splat_dir}/tb")
 
     def _load_data(self) -> None:
         """Parse the COLMAP dataset and build train/val ``Dataset`` objects."""
         cfg = self.cfg
         self.parser = Parser(
-            data_dir=cfg.data_dir,
+            colmap_dir=cfg.model_dir,
+            images_dir=cfg.images_dir,
+            masks_dir=cfg.masks_dir,
+            valid_region_masks_dir=cfg.valid_region_masks_dir,
             factor=cfg.data_factor,
             normalize=cfg.normalize_world_space,
             test_every=cfg.test_every,
@@ -142,7 +145,22 @@ class Runner:
             patch_size=cfg.patch_size,
             load_depths=cfg.depth_loss,
         )
-        self.valset = Dataset(self.parser, split="val")
+
+        # If ground-truth images are available, evaluate metrics against them
+        # instead of the (blurred/focus-stacked) training images.
+        eval_parser = self.parser
+        if cfg.gt_images_dir is not None and os.path.isdir(cfg.gt_images_dir):
+            print(f"Evaluating against ground-truth images in {cfg.gt_images_dir!r}.")
+            eval_parser = Parser(
+                colmap_dir=cfg.model_dir,
+                images_dir=cfg.gt_images_dir,
+                masks_dir=cfg.masks_dir,
+                valid_region_masks_dir=cfg.valid_region_masks_dir,
+                factor=cfg.data_factor,
+                normalize=cfg.normalize_world_space,
+                test_every=cfg.test_every,
+            )
+        self.valset = Dataset(eval_parser, split="val")
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         print("Scene scale:", self.scene_scale)
 
@@ -286,7 +304,7 @@ class Runner:
         self.viewer = GsplatViewer(
             server=self.server,
             render_fn=self._viewer_render_fn,
-            output_dir=Path(self.cfg.result_dir),
+            output_dir=Path(self.cfg.splat_dir),
             mode="training",
         )
 
@@ -415,7 +433,15 @@ class Runner:
         pixels = data["image"].to(device) / 255.0
         num_rays = pixels.shape[0] * pixels.shape[1] * pixels.shape[2]
         image_ids = data["image_id"].to(device)
-        masks = data["mask"].to(device) if "mask" in data else None
+        object_mask = data["mask"].to(device) if "mask" in data else None
+        valid_region_mask = (
+            data["valid_region_mask"].to(device)
+            if "valid_region_mask" in data
+            else None
+        )
+        photometric_mask = (
+            valid_region_mask if valid_region_mask is not None else object_mask
+        )
 
         points = depths_gt = None
         if cfg.depth_loss:
@@ -441,7 +467,7 @@ class Runner:
             far_plane=cfg.far_plane,
             image_ids=image_ids,
             render_mode="RGB+ED" if cfg.depth_loss else "RGB",
-            masks=masks,
+            masks=photometric_mask,
         )
         colors = renders[..., :3]
         depths = renders[..., 3:4] if renders.shape[-1] == 4 else None
@@ -473,11 +499,34 @@ class Runner:
         )
 
         # ── Loss ──────────────────────────────────────────────────────────
-        l1loss = F.l1_loss(colors, pixels)
+        if photometric_mask is not None:
+            l1loss = F.l1_loss(colors[photometric_mask], pixels[photometric_mask])
+            colors_ssim = colors * photometric_mask[..., None]
+            pixels_ssim = pixels * photometric_mask[..., None]
+        else:
+            l1loss = F.l1_loss(colors, pixels)
+            colors_ssim = colors
+            pixels_ssim = pixels
         ssimloss = 1.0 - fused_ssim(
-            colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2), padding="valid"
+            colors_ssim.permute(0, 3, 1, 2),
+            pixels_ssim.permute(0, 3, 1, 2),
+            padding="valid",
         )
-        loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
+        loss = torch.lerp(l1loss, ssimloss, cfg.ssim_lambda)
+
+        background_mask = None
+        if object_mask is not None:
+            background_mask = ~object_mask
+            if valid_region_mask is not None:
+                background_mask = background_mask & valid_region_mask
+
+        if background_mask is not None and cfg.bg_alpha_loss and background_mask.any():
+            bg_alpha_loss = alphas[background_mask].mean()
+            loss = loss + (
+                bg_alpha_loss * cfg.bg_alpha_lambda
+                if cfg.bg_alpha_lambda > 0.0
+                else 0.0
+            )
 
         depthloss = tvloss = None
         if cfg.depth_loss and points is not None and depths_gt is not None:
@@ -597,7 +646,7 @@ class Runner:
         cfg = self.cfg
 
         if self.world_rank == 0:
-            with open(f"{cfg.result_dir}/cfg.yml", "w") as f:
+            with open(f"{cfg.splat_dir}/cfg.yml", "w") as f:
                 yaml.dump(vars(cfg), f)
 
         max_steps = cfg.max_steps
@@ -667,7 +716,7 @@ class Runner:
                 )
 
             # ── Evaluation ────────────────────────────────────────────────
-            if step in eval_at:
+            if step in eval_at or step == max_steps - 1:
                 self.evaluator.eval(step)
                 self.evaluator.render_traj(step)
                 if cfg.compression is not None:

@@ -1,2 +1,12 @@
 results
 data
+outputs/*
+!outputs/.gitkeep
+
+# experiments
+configs/experiment/*
+!configs/experiment/.gitkeep
+!configs/experiment/colmap_ablation
+!configs/experiment/focus_stack_ablation
+!configs/experiment/synthetic
+!configs/experiment/main_paper.yaml

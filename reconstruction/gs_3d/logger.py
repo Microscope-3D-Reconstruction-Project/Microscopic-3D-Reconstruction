@@ -10,16 +10,14 @@ import time
 
 from typing import Optional
 
-import numpy as np
 import torch
 
 from gsplat import export_splats
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
 
-from utils import rgb_to_sh
-
 from .config import Config
+from .utils import rgb_to_sh
 
 
 class TrainingLogger:
@@ -142,5 +140,5 @@ class TrainingLogger:
             sh0=sh0,
             shN=shN,
             format="ply",
-            save_to=f"{self.ply_dir}/point_cloud_{step}.ply",
+            save_to=f"{self.ply_dir}/splat3dgs_{step}.ply",
         )

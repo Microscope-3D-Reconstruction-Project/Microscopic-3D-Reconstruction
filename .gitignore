@@ -1,8 +1,11 @@
 .vscode
 .venv
 .idea
+.agents
 __pycache__
 microscope_scripts/outputs
 outputs/
 data
 results/
+logs
+!logs/.gitkeep

@@ -1,0 +1,56 @@
+# ── Input ─────────────────────────────────────────────────────────────────────
+dataset_dir: ???              # required: directory containing scan subdirs
+gt_data_dir: null             # optional: mirrors dataset_dir's scan subdirs/filenames with ground-truth images; if set, the reference-frame image is copied per scan into output_paths.gt_images_subdir
+
+# ── Subdirectory search ───────────────────────────────────────────────────────
+scan_prefix: scan             # only subdirs starting with this prefix are processed
+scan_dirs: null               # optional list of specific scan dirs to process (e.g. [scan01, scan05]); null = all scan_prefix dirs
+
+# ── Experiment ────────────────────────────────────────────────────────────────
+output_dir: outputs
+experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
+
+# ── Reference image selection ────────────────────────────────────────────────
+sharpness_score: tenengrad    # laplacian | tenengrad
+sharpness_selection_mode: gaussian_fit_window  # image (selects sharpest image as reference) | fixed_window (uniform sliding window) | gaussian_fit_window | null (uses entire focus stack, middle is reference)
+median_filter_scores: true          # apply 1-D median filter to sharpness scores before reference selection (removes isolated spikes)
+median_filter_scores_kernel_size: 3  # window size for the score median filter (odd integer)
+
+# ── Output paths ──────────────────────────────────────────────────────────────
+output_paths:
+  output_dir: ${..output_dir}/${..experiment_name}/focus_stack
+  images_subdir: focus_stacked_images
+  masks_subdir: focus_stacked_masks
+  depthmaps_subdir: depthmaps
+  sharpness_scores_subdir: sharpness_scores
+  preprocessed_images_subdir: preprocessed_images
+  gt_images_subdir: gt_images
+  poses_filename: poses.json
+  intrinsics_filename: intrinsics.json
+
+# ── focus-stack CLI params ────────────────────────────────────────────────────
+focus_stack_params:
+  focal_stack_size: 7       # odd number of images centered on the reference frame; null = use all images (reference still chosen per sharpness_selection_mode, e.g. gaussian_fit_window peak)
+  gaussian_fit_n_sigma: 1.0  # window half-width in std devs for gaussian_fit_window selection mode (smaller = tighter); ignored when focal_stack_size is null
+  full_resolution_align: true
+  global_align: true
+  align_keep_size: true
+  no_contrast: true
+
+# ── Pre-processing ────────────────────────────────────────────────────────────
+median_blur_input: true       # apply median blur to input images before focus stacking
+median_blur_kernel_size: 5     # kernel size for median blur (must be odd)
+low_pass_input: false          # apply Gaussian blur to input images before focus stacking
+low_pass_input_kernel_size: 5  # kernel size for input Gaussian blur (must be odd)
+
+# ── Post-processing ───────────────────────────────────────────────────────────
+low_pass_output: false          # apply Gaussian blur to focus-stacked output images
+low_pass_kernel_size: 5        # kernel size for output Gaussian blur (must be odd)
+
+# ── Hydra internal settings ───────────────────────────────────────────────────
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${output_dir}/${experiment_name}
+  output_subdir: .hydra

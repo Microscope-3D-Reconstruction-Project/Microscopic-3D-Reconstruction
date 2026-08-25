@@ -1,6 +1,25 @@
 defaults:
-  - strategy: default
   - _self_
+
+random_seed: 0
+
+# ── Strategy ───────────────────────────────────────────────────────────────────
+# DefaultStrategy — densification heuristics from the original 3DGS paper.
+# Override the whole strategy block in a variant config (e.g. gsplat/mcmc.yaml).
+strategy:
+  _target_: gsplat.strategy.DefaultStrategy
+  verbose: true
+  prune_opa: 0.05
+  grow_grad2d: 0.0002
+  grow_scale3d: 0.01
+  prune_scale3d: 0.1
+  refine_start_iter: 500
+  refine_stop_iter: 15000
+  reset_every: 3000
+  refine_every: 100
+  absgrad: false
+  revised_opacity: false
+  key_for_gradient: means2d
 
 # ── Viewer ─────────────────────────────────────────────────────────────────────
 disable_viewer: false
@@ -12,14 +31,27 @@ compression: null          # "png" or null
 render_traj_path: interp   # "interp" | "ellipse" | "spiral"
 render_traj_trim: 5        # frames to drop from each end before path generation; null to disable
 
+# ── Experiment ─────────────────────────────────────────────────────────────────
+output_dir: outputs
+experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
+
+# ── Input / output paths ───────────────────────────────────────────────────────
+input_paths:
+  model_dir:  ${..output_dir}/${..experiment_name}/sparse_model
+  images_dir: ${..output_dir}/${..experiment_name}/masking/masked_images
+  masks_dir:  ${..output_dir}/${..experiment_name}/masking/masks                  # optional mask directory
+  valid_region_masks_dir: ${..output_dir}/${..experiment_name}/focus_stack/focus_stacked_masks
+  gt_images_dir: ${..output_dir}/${..experiment_name}/masking/masked_gt_images    # optional; used for eval metrics only if this directory exists (focus_stack.gt_data_dir was set)
+
+output_paths:
+  splat_dir: ${..output_dir}/${..experiment_name}/gs_3d
+
 # ── Data ───────────────────────────────────────────────────────────────────────
-data_dir: data/360_v2/garden
 data_factor: 4
-result_dir: results/garden
 test_every: 8
 patch_size: null
 global_scale: 1.0
-normalize_world_space: true
+normalize_world_space: true   # apply similarity transform so cameras span unit scale
 camera_model: pinhole      # "pinhole" | "ortho" | "fisheye"
 
 # ── Viewer server ──────────────────────────────────────────────────────────────
@@ -31,7 +63,7 @@ steps_scaler: 1.0
 max_steps: 30000
 eval_steps: [7000, 30000]
 save_steps: [7000, 30000]
-save_ply: false
+save_ply: true
 ply_steps: [7000, 30000]
 disable_video: false
 
@@ -87,6 +119,10 @@ bilateral_grid_shape: [16, 16, 8]
 # ── Depth loss ─────────────────────────────────────────────────────────────────
 depth_loss: false
 depth_lambda: 0.01
+
+# ── Background Alpha Loss ─────────────────────────────────────────────────────
+bg_alpha_loss: true
+bg_alpha_lambda: 0.5
 
 # ── Tensorboard ────────────────────────────────────────────────────────────────
 tb_every: 100

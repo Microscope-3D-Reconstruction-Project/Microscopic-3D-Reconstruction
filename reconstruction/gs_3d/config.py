@@ -7,6 +7,9 @@ from typing_extensions import Literal, assert_never
 
 @dataclass
 class Config:
+    # ── Miscellaneous ─────────────────────────────────────────────────────────
+    random_seed: int = 0
+
     # ── Viewer ────────────────────────────────────────────────────────────────
     disable_viewer: bool = False
 
@@ -17,10 +20,16 @@ class Config:
     render_traj_trim: Optional[
         int
     ] = 5  # frames to drop from each end before path generation; None disables trim
-    # ── Data ──────────────────────────────────────────────────────────────────
-    data_dir: str = "data/360_v2/garden"
+    # ── Data paths ────────────────────────────────────────────────────────────
+    model_dir: str = "outputs/sparse_model"
+    images_dir: str = "outputs/images"
+    masks_dir: Optional[str] = None
+    valid_region_masks_dir: Optional[str] = None
+    # optional ground-truth images (from focus_stack.gt_data_dir); used for
+    # eval metrics instead of images_dir when the directory exists
+    gt_images_dir: Optional[str] = None
+    splat_dir: str = "outputs/gsplat"
     data_factor: int = 4
-    result_dir: str = "results/garden"
     test_every: int = 8
     patch_size: Optional[int] = None
     global_scale: float = 1.0
@@ -97,6 +106,10 @@ class Config:
     # ── Depth loss ────────────────────────────────────────────────────────────
     depth_loss: bool = False
     depth_lambda: float = 1e-2
+
+    #  Background Alpha Loss (drives background Gaussians to be transparent, only works if masks are provided)
+    bg_alpha_loss: bool = True
+    bg_alpha_lambda: float = 0.5
 
     # ── Tensorboard ───────────────────────────────────────────────────────────
     tb_every: int = 100

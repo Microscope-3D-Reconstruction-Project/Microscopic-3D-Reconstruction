@@ -27,6 +27,14 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from .config import Config
+from .metrics import GSS, LSS
+
+
+def _apply_eval_mask(colors, pixels, masks):
+    """Zero masked pixels on both sides, matching training-time SSIM masking."""
+    if masks is None:
+        return colors, pixels
+    return colors * masks[..., None], pixels * masks[..., None]
 
 
 class Evaluator:
@@ -78,6 +86,8 @@ class Evaluator:
         cfg = self.cfg
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
         self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
+        self.gss = GSS().to(self.device)
+        self.lss = LSS().to(self.device)
         if cfg.lpips_net == "alex":
             self.lpips = LearnedPerceptualImagePatchSimilarity(
                 net_type="alex", normalize=True
@@ -101,14 +111,22 @@ class Evaluator:
         valloader = torch.utils.data.DataLoader(
             self.valset, batch_size=1, shuffle=False, num_workers=1
         )
-        ellipse_time = 0.0
-        metrics = defaultdict(list)
 
+        ellipse_time = 0
+        metrics = defaultdict(list)
         for i, data in enumerate(valloader):
             camtoworlds = data["camtoworld"].to(device)
             Ks = data["K"].to(device)
             pixels = data["image"].to(device) / 255.0
-            masks = data["mask"].to(device) if "mask" in data else None
+            object_mask = data["mask"].to(device) if "mask" in data else None
+            valid_region_mask = (
+                data["valid_region_mask"].to(device)
+                if "valid_region_mask" in data
+                else None
+            )
+            eval_mask = (
+                valid_region_mask if valid_region_mask is not None else object_mask
+            )
             height, width = pixels.shape[1:3]
 
             torch.cuda.synchronize()
@@ -121,29 +139,40 @@ class Evaluator:
                 sh_degree=cfg.sh_degree,
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
-                masks=masks,
-            )
+                masks=eval_mask,
+            )  # [1, H, W, 3]
             torch.cuda.synchronize()
             ellipse_time += max(time.time() - tic, 1e-10)
+
             colors = torch.clamp(colors, 0.0, 1.0)
+            colors_eval, pixels_eval = _apply_eval_mask(colors, pixels, eval_mask)
+            canvas_list = [pixels_eval, colors_eval]
 
             if self.world_rank == 0:
-                canvas = torch.cat([pixels, colors], dim=2).squeeze(0).cpu().numpy()
+                # write images
+                canvas = torch.cat(canvas_list, dim=2).squeeze(0).cpu().numpy()
+                canvas = (canvas * 255).astype(np.uint8)
                 imageio.imwrite(
                     f"{self.render_dir}/{stage}_step{step}_{i:04d}.png",
-                    (canvas * 255).astype(np.uint8),
+                    canvas,
                 )
-                pixels_p = pixels.permute(0, 3, 1, 2)
-                colors_p = colors.permute(0, 3, 1, 2)
+
+                pixels_p = pixels_eval.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                colors_p = colors_eval.permute(0, 3, 1, 2)  # [1, 3, H, W]
                 metrics["psnr"].append(self.psnr(colors_p, pixels_p))
                 metrics["ssim"].append(self.ssim(colors_p, pixels_p))
                 metrics["lpips"].append(self.lpips(colors_p, pixels_p))
-                if cfg.use_bilateral_grid and self.color_correct is not None:
-                    cc = self.color_correct(colors, pixels)
-                    cc_p = cc.permute(0, 3, 1, 2)
-                    metrics["cc_psnr"].append(self.psnr(cc_p, pixels_p))
-                    metrics["cc_ssim"].append(self.ssim(cc_p, pixels_p))
-                    metrics["cc_lpips"].append(self.lpips(cc_p, pixels_p))
+                metrics["gss"].append(self.gss(pixels_p, colors_p))
+                metrics["lss"].append(self.lss(pixels_p, colors_p))
+                if cfg.use_bilateral_grid:
+                    cc_colors = self.color_correct(colors, pixels)
+                    cc_colors, _ = _apply_eval_mask(cc_colors, pixels, eval_mask)
+                    cc_colors_p = cc_colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                    metrics["cc_psnr"].append(self.psnr(cc_colors_p, pixels_p))
+                    metrics["cc_ssim"].append(self.ssim(cc_colors_p, pixels_p))
+                    metrics["cc_lpips"].append(self.lpips(cc_colors_p, pixels_p))
+                    metrics["cc_gss"].append(self.gss(pixels_p, cc_colors_p))
+                    metrics["cc_lss"].append(self.lss(pixels_p, cc_colors_p))
 
         if self.world_rank == 0:
             ellipse_time /= len(valloader)
@@ -154,13 +183,15 @@ class Evaluator:
 
             base = (
                 f"PSNR: {stats['psnr']:.3f}, SSIM: {stats['ssim']:.4f}, "
-                f"LPIPS: {stats['lpips']:.3f} "
+                f"LPIPS: {stats['lpips']:.3f}, GSS: {stats['gss']:.4f}, "
+                f"LSS: {stats['lss']:.4f} "
             )
             extra = ""
             if cfg.use_bilateral_grid and "cc_psnr" in stats:
                 extra = (
                     f"CC_PSNR: {stats['cc_psnr']:.3f}, CC_SSIM: {stats['cc_ssim']:.4f}, "
-                    f"CC_LPIPS: {stats['cc_lpips']:.3f} "
+                    f"CC_LPIPS: {stats['cc_lpips']:.3f}, CC_GSS: {stats['cc_gss']:.4f}, "
+                    f"CC_LSS: {stats['cc_lss']:.4f} "
                 )
             print(
                 base
@@ -216,7 +247,7 @@ class Evaluator:
         K = torch.from_numpy(list(self.parser.Ks_dict.values())[0]).float().to(device)
         width, height = list(self.parser.imsize_dict.values())[0]
 
-        video_dir = f"{cfg.result_dir}/videos"
+        video_dir = f"{cfg.splat_dir}/videos"
         os.makedirs(video_dir, exist_ok=True)
         writer = imageio.get_writer(f"{video_dir}/traj_{step}.mp4", fps=30)
         for i in tqdm.trange(len(camtoworlds_all), desc="Rendering trajectory"):
@@ -250,7 +281,7 @@ class Evaluator:
             return
         print("Running compression...")
         cfg = self.cfg
-        compress_dir = f"{cfg.result_dir}/compression/rank{self.world_rank}"
+        compress_dir = f"{cfg.splat_dir}/compression/rank{self.world_rank}"
         os.makedirs(compress_dir, exist_ok=True)
         self.compression_method.compress(compress_dir, self.splats)
         splats_c = self.compression_method.decompress(compress_dir)

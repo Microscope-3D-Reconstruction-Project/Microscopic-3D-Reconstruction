@@ -1,0 +1,27 @@
+# @package _global_
+
+output_dir: outputs/seed_${random_seed}/synthetic
+experiment_name: pinecone
+dataset_dir: /storage/home/hcoda1/8/razarcon3/scratch/Microscopic-3D-Reconstruction/microscope-data/synthetic_scans/pinecone/blurred
+gt_data_dir: /storage/home/hcoda1/8/razarcon3/scratch/Microscopic-3D-Reconstruction/microscope-data/synthetic_scans/pinecone/gt
+
+random_seed: 0
+
+run:
+  focus_stack: true
+  masking: true
+  colmap: true
+  gs_3d: true
+
+colmap:
+  reconstruction:
+    mode: automatic          # triangulate | automatic
+
+gs_3d:
+  data_factor: 1
+  disable_viewer: true
+  disable_video: true
+  
+  strategy:
+    prune_opa: 0.10 # opacity based pruning threshold (higher = more aggressive pruning, can speed up but may lose thin structures)
+    grow_grad2d: 0.0004 # splits gaussians more to preserve details but can cause some noise

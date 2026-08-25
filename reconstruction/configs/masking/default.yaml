@@ -1,0 +1,47 @@
+# Experiment
+output_dir: outputs
+experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
+random_seed: 0
+
+# Input / output paths
+input_paths:
+  images_dir: ${...output_dir}/${...experiment_name}/focus_stack/focus_stacked_images
+  valid_regions_dir: ${...output_dir}/${...experiment_name}/focus_stack/focus_stacked_masks
+  gt_images_dir: ${...output_dir}/${...experiment_name}/focus_stack/gt_images  # optional; masked only if this dir exists (focus_stack.gt_data_dir was set)
+
+output_paths:
+  output_dir: ${..output_dir}/${..experiment_name}/masking
+  masks_subdir: masks
+  masked_gt_images_subdir: masked_gt_images
+
+# Canny edge + point-prompt bootstrap
+bootstrap:
+  bootstrap_stem: scan00
+  focus_mask_border_padding: 8
+  edge_blur_kernel_size: 5
+  canny_threshold1: 25.0
+  canny_threshold2: 150.0
+  point_sampling_scale: 0.9
+  point_prompt_count: 80
+  firstpass_shrink_scale: 0.9
+  points_refine_kernel_size: 9
+  points_refine_dilate_iterations: 1
+
+# SAM2
+sam2:
+  model_id: facebook/sam2.1-hiera-large
+  device: cuda
+  offload_video_to_cpu: true
+
+# Visualization/debug outputs
+visualization:
+  overlay_alpha: 0.4
+  overlay_color: [255, 0, 0]
+
+# Hydra internal settings
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${output_dir}/${experiment_name}
+  output_subdir: .hydra

@@ -1,0 +1,62 @@
+# ── Pipeline flags ────────────────────────────────────────────────────────────
+random_seed: 0
+
+# ── Stage toggles (can also be driven by pipeline.yaml) ───────────────────────
+run:
+  colmap_feat_extract_match: true
+  colmap_reconstruct: true
+
+# ── Experiment ────────────────────────────────────────────────────────────────
+output_dir: outputs
+experiment_name: ${now:%Y-%m-%d_%H-%M-%S}
+
+# ── Feature extraction / matching ─────────────────────────────────────────────
+feat_extract_match:
+  input_paths:
+    images_dir: ${...output_dir}/${...experiment_name}/focus_stack/focus_stacked_images
+    masks_dir: ${...output_dir}/${...experiment_name}/masking/masks
+  output_paths:
+    output_dir: ${...output_dir}/${...experiment_name}
+    database_filename: database.db
+  extraction:
+    device: cpu
+    camera_model: OPENCV
+    num_threads: 1
+    max_num_features: 8192
+    estimate_affine_shape: true
+  matching:
+    use_gpu: false
+    num_threads: 1
+    guided_matching: true
+
+# ── Reconstruction ────────────────────────────────────────────────────────────
+reconstruction:
+  mode: automatic          # triangulate | automatic
+  load_prior_poses: true    # automatic mode only: use known robot poses as prior
+  load_prior_intrinsics: true  # use known camera intrinsics as prior
+  refine_intrinsics: true    # whether to refine camera intrinsics during bundle adjustment
+  input_paths:
+    poses_json: ${...output_dir}/${...experiment_name}/poses.json
+    prior_intrinsics_filepath: ${...output_dir}/${...experiment_name}/intrinsics.json
+    images_dir: ${...feat_extract_match.input_paths.images_dir}
+    database_filepath: ${...feat_extract_match.output_paths.output_dir}/${...feat_extract_match.output_paths.database_filename}
+  output_paths:
+    output_dir: ${...output_dir}/${...experiment_name}
+    model_dirname: sparse_model
+  mapping_params:
+    min_focal_length_ratio: 0.1
+    max_focal_length_ratio: 10.0
+    max_extra_param: .inf
+    ba_local_max_num_iterations: 30
+    ba_local_max_refinements: 3
+    ba_global_max_num_iterations: 75
+    ba_use_gpu: false
+    num_threads: 1
+
+# ── Hydra internal settings ───────────────────────────────────────────────────
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${output_dir}/${experiment_name}
+  output_subdir: .hydra
