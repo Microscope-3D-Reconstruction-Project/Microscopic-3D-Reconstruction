@@ -1,0 +1,49 @@
+# @package _global_
+
+output_dir: outputs/seed_${random_seed}/colmap_ablation/ws_only_poses_auto
+
+experiment_name: ???
+dataset_dir: ???
+
+random_seed: 0
+
+run:
+  focus_stack: false
+  masking: false
+  colmap: true
+  gs_3d: true
+
+colmap:
+  feat_extract_match:
+    input_paths:
+      images_dir: outputs/seed_${random_seed}/main_paper/${...experiment_name}/focus_stack/focus_stacked_images
+      masks_dir: outputs/seed_${random_seed}/main_paper/${...experiment_name}/masking/masks
+
+  reconstruction:
+    mode: automatic          # triangulate | automatic
+    load_prior_poses: true    # automatic mode only: use known robot poses as prior
+    load_prior_intrinsics: false  # use known camera intrinsics as prior
+    refine_intrinsics: true    # whether to refine camera intrinsics during bundle adjustment
+
+    input_paths:
+      poses_json: outputs/seed_${random_seed}/main_paper/${...experiment_name}/poses.json
+      prior_intrinsics_filepath: outputs/seed_${random_seed}/main_paper/${...experiment_name}/intrinsics.json
+      images_dir: ${...feat_extract_match.input_paths.images_dir}
+      database_filepath: ${...feat_extract_match.output_paths.output_dir}/${...feat_extract_match.output_paths.database_filename}
+
+
+gs_3d:
+  input_paths:
+    model_dir:  ${..output_dir}/${..experiment_name}/sparse_model
+    images_dir: outputs/seed_${random_seed}/main_paper/${..experiment_name}/focus_stack/focus_stacked_images
+    masks_dir:  outputs/seed_${random_seed}/main_paper/${..experiment_name}/focus_stack/focus_stacked_masks                  # optional mask directory
+    valid_region_masks_dir: outputs/seed_${random_seed}/main_paper/${..experiment_name}/focus_stack/focus_stacked_masks
+
+
+  data_factor: 1
+  disable_viewer: true
+  disable_video: true
+  
+  strategy:
+    prune_opa: 0.10
+    grow_grad2d: 0.0004

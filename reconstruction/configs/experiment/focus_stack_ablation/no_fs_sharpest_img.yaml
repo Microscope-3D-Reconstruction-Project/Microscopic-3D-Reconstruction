@@ -1,0 +1,31 @@
+# @package _global_
+
+output_dir: outputs/seed_${random_seed}/focus_stack_ablation/no_fs_sharpest_img
+experiment_name: ???
+dataset_dir: ???
+
+random_seed: 0
+
+run:
+  focus_stack: true
+  masking: true
+  colmap: true
+  gs_3d: true
+
+focus_stack:
+  sharpness_selection_mode: image
+  focus_stack_params:
+    focal_stack_size: 1
+
+colmap:
+  reconstruction:
+    mode: automatic          # triangulate | automatic
+
+gs_3d:
+  data_factor: 1
+  disable_viewer: true
+  disable_video: true
+  
+  strategy:
+    prune_opa: 0.10 # opacity based pruning threshold (higher = more aggressive pruning, can speed up but may lose thin structures)
+    grow_grad2d: 0.0004 # splits gaussians more to preserve details but can cause some noise
