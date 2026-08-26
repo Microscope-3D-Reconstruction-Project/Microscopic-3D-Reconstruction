@@ -79,9 +79,6 @@ class Sam2MaskingPipeline:
         canny_masks_dir = os.path.join(bootstrap_debug_dir, "canny_masks")
         canny_masked_dir = os.path.join(bootstrap_debug_dir, "canny_masked_images")
         canny_overlays_dir = os.path.join(bootstrap_debug_dir, "canny_overlay_images")
-        bootstrap_masks_dir = os.path.join(bootstrap_debug_dir, "bootstrap_masks")
-        bootstrap_masked_dir = os.path.join(bootstrap_debug_dir, "bootstrap_masked_images")
-        bootstrap_overlays_dir = os.path.join(bootstrap_debug_dir, "bootstrap_overlay_images")
         for d in (
             masks_dir,
             masked_images_dir,
